@@ -116,3 +116,18 @@ jobs:
             echo "::error::prior-art brand name found in tracked files"
             exit 1
           fi
+
+  license-scan:
+    name: License scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+      # Fail if any dependency in the shipped (default, CGo-free) build is
+      # copyleft (GPL/AGPL) — the OmniParser AGPL guard. robotgo deps are
+      # build-tagged out of the default graph and not scanned here.
+      - name: No copyleft dependencies
+        run: go run github.com/google/go-licenses@latest check ./... --disallowed_types=restricted

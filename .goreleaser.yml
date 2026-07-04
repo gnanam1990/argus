@@ -1,0 +1,57 @@
+version: 2
+project_name: argus
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: argus
+    main: ./cmd/argus
+    binary: argus
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags: &ldflags
+      - -s -w
+      - -X github.com/gnanam1990/argus/internal/version.Version={{.Version}}
+      - -X github.com/gnanam1990/argus/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/gnanam1990/argus/internal/version.Date={{.Date}}
+
+  - id: argus-mcp
+    main: ./cmd/argus-mcp
+    binary: argus-mcp
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags: *ldflags
+
+  - id: guestd
+    main: ./cmd/guestd
+    binary: guestd
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags: *ldflags
+
+archives:
+  - id: default
+    ids: [argus, argus-mcp, guestd]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "checksums.txt"
+
+sboms:
+  - artifacts: archive
+
+changelog:
+  use: github
+  sort: asc
+
+release:
+  draft: true
+  prerelease: auto

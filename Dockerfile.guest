@@ -1,0 +1,20 @@
+# The Argus guest image: runs guestd inside a headless X11 desktop so the agent
+# on the host can drive it over the transport.
+#
+# guestd refuses a non-loopback bind without a token, so set ARGUS_GUEST_TOKEN:
+#   docker run -e ARGUS_GUEST_TOKEN=... -p 7180:7180 argus-guest:latest
+FROM golang:1.24-bookworm AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -o /out/guestd ./cmd/guestd
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      xvfb xdotool maim x11-xserver-utils \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/guestd /usr/local/bin/guestd
+ENV DISPLAY=:99
+EXPOSE 7180
+CMD ["xvfb-run", "-a", "--server-args=-screen 0 1280x800x24", \
+     "guestd", "--addr", "0.0.0.0:7180"]
