@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+      - name: go vet
+        run: go vet ./...
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt found unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: go mod tidy is clean
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: staticcheck
+        uses: dominikh/staticcheck-action@v1
+        with:
+          version: latest
+          install-go: false
+
+  test:
+    name: Test (race)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+      # -race requires cgo; ubuntu runners ship a C compiler.
+      - name: go test -race
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    env:
+      CGO_ENABLED: "0"
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+      - name: go build
+        run: go build ./...
+
+  hygiene:
+    name: Repo hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No secret-like files tracked
+        run: |
+          matches="$(git ls-files | grep -E '(^|/)(\.env(\..+)?|.+\.pem|id_rsa.*|.+\.key)$' || true)"
+          if [ -n "$matches" ]; then
+            echo "::error::secret-like files are tracked:"
+            echo "$matches"
+            exit 1
+          fi
+      - name: No prior-art brand names in source
+        run: |
+          # Scan tracked source/docs (excluding this CI config, which necessarily
+          # names the denylist) for prior-art project brand tokens.
+          files="$(git ls-files | grep -vE '^\.github/' || true)"
+          if [ -n "$files" ] && printf '%s\n' "$files" | xargs grep -riEwn 'trycua|cua' 2>/dev/null; then
+            echo "::error::prior-art brand name found in tracked files"
+            exit 1
+          fi

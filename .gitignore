@@ -1,0 +1,34 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+__debug_bin*
+
+# Coverage
+coverage.out
+coverage.html
+
+# Secrets & local environment — NEVER commit these
+.env
+.env.*
+*.local
+*.pem
+*.key
+id_rsa*
+credentials.json
+service-account*.json
+
+# Model weights / caches (never vendored)
+*.onnx
+*.pt
+*.safetensors
+/models/
+/.cache/
+
+# Editor / OS cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp
