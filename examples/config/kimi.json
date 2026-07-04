@@ -1,0 +1,10 @@
+{
+  "provider": {
+    "kind": "kimi",
+    "model": "kimi-latest",
+    "max_tokens": 4096
+  },
+  "agent": { "max_steps": 30, "retain_images": 2 },
+  "grounding": { "mode": "ax" },
+  "sandbox": { "kind": "host" }
+}

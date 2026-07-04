@@ -43,6 +43,42 @@ func TestBuildProviderKinds(t *testing.T) {
 	}
 }
 
+func TestCompatPresets(t *testing.T) {
+	t.Parallel()
+	// Kimi, xAI, and Ollama are OpenAI-compatible presets: they build without
+	// a base_url (the preset supplies a default) and read distinct key envs.
+	for _, kind := range []string{"kimi", "xai", "ollama"} {
+		cfg := config.Defaults()
+		cfg.Provider.Kind = kind
+		cfg.Provider.Model = "m"
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("%s: config invalid: %v", kind, err)
+		}
+		p, err := app.BuildProvider(cfg, noEnv)
+		if err != nil || p == nil {
+			t.Errorf("%s: BuildProvider: %v", kind, err)
+		}
+		// Non-native → emulated computer use → grounding engages.
+		if p != nil && p.Capabilities().NativeComputerUse {
+			t.Errorf("%s should report emulated computer use", kind)
+		}
+	}
+
+	wantEnv := map[string]string{
+		"anthropic": "ANTHROPIC_API_KEY",
+		"openai":    "OPENAI_API_KEY",
+		"kimi":      "MOONSHOT_API_KEY",
+		"xai":       "XAI_API_KEY",
+		"ollama":    "OLLAMA_API_KEY",
+		"compat":    "ARGUS_API_KEY",
+	}
+	for kind, env := range wantEnv {
+		if got := app.APIKeyEnv(kind); got != env {
+			t.Errorf("APIKeyEnv(%q) = %q, want %q", kind, got, env)
+		}
+	}
+}
+
 func TestBuildGrounder(t *testing.T) {
 	t.Parallel()
 	none := config.Defaults()

@@ -9,7 +9,21 @@ the environment only.
 |---|---|---|---|
 | `anthropic` | native computer-use | `ANTHROPIC_API_KEY` | Claude with the first-class computer tool (raw screenshots, no grounder needed). |
 | `openai` | OpenAI-compatible | `OPENAI_API_KEY` | Chat Completions with an emulated computer function tool; engages set-of-marks grounding. |
-| `compat` | OpenAI-compatible | `ARGUS_API_KEY` | Any OpenAI-compatible endpoint (local models, routers). Requires `base_url`. |
+| `kimi` | OpenAI-compatible | `MOONSHOT_API_KEY` | Moonshot Kimi (`https://api.moonshot.ai/v1`). |
+| `xai` | OpenAI-compatible | `XAI_API_KEY` | xAI Grok (`https://api.x.ai/v1`). OAuth-subscription auth is planned. |
+| `ollama` | OpenAI-compatible | `OLLAMA_API_KEY` (usually unset) | Local models (`http://localhost:11434/v1`). |
+| `compat` | OpenAI-compatible | `ARGUS_API_KEY` | Any other OpenAI-compatible endpoint/router. Requires `base_url`. |
+
+`kimi`, `xai`, `ollama` are convenience presets over the `compat` adapter — each
+just fills in a default `base_url` and key env (both overridable). Any other
+OpenAI-compatible service (e.g. an OpenRouter endpoint) works via `compat` with
+an explicit `base_url`.
+
+```sh
+export MOONSHOT_API_KEY=...   && argus run --config examples/config/kimi.json   "..."
+export XAI_API_KEY=...        && argus run --config examples/config/xai.json    "..."
+argus run --config examples/config/ollama.json "..."   # local, no key
+```
 
 ## Anthropic
 

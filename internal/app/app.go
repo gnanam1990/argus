@@ -29,16 +29,34 @@ import (
 	"github.com/gnanam1990/argus/pkg/trajectory"
 )
 
+// compatPreset is an OpenAI-compatible endpoint preset: a default base URL and
+// the environment variable its API key is read from.
+type compatPreset struct {
+	baseURL string // default; overridden by config base_url
+	keyEnv  string
+}
+
+// compatPresets are the OpenAI-compatible providers. Kimi (Moonshot), xAI
+// (Grok), and Ollama all speak the OpenAI Chat Completions API, so they share
+// the compat adapter — only the endpoint and key env differ. All are
+// overridable via base_url.
+var compatPresets = map[string]compatPreset{
+	"openai": {"https://api.openai.com/v1", "OPENAI_API_KEY"},
+	"kimi":   {"https://api.moonshot.ai/v1", "MOONSHOT_API_KEY"},
+	"xai":    {"https://api.x.ai/v1", "XAI_API_KEY"},
+	"ollama": {"http://localhost:11434/v1", "OLLAMA_API_KEY"},
+	"compat": {"", "ARGUS_API_KEY"},
+}
+
 // APIKeyEnv returns the environment variable a provider kind reads its key from.
 func APIKeyEnv(kind string) string {
-	switch kind {
-	case "anthropic":
+	if kind == "anthropic" {
 		return "ANTHROPIC_API_KEY"
-	case "openai":
-		return "OPENAI_API_KEY"
-	default:
-		return "ARGUS_API_KEY"
 	}
+	if p, ok := compatPresets[kind]; ok {
+		return p.keyEnv
+	}
+	return "ARGUS_API_KEY"
 }
 
 // BuildProvider constructs the model adapter. Secrets come from getenv; no
@@ -46,8 +64,8 @@ func APIKeyEnv(kind string) string {
 func BuildProvider(cfg config.Config, getenv func(string) string) (model.Provider, error) {
 	p := cfg.Provider
 	key := getenv(APIKeyEnv(p.Kind))
-	switch p.Kind {
-	case "anthropic":
+
+	if p.Kind == "anthropic" {
 		copts := []sdkopt.RequestOption{}
 		if key != "" {
 			copts = append(copts, sdkopt.WithAPIKey(key))
@@ -61,20 +79,25 @@ func BuildProvider(cfg config.Config, getenv func(string) string) (model.Provide
 			anthropic.WithDisplaySize(p.DisplayWidth, p.DisplayHeight),
 			anthropic.WithClientOptions(copts...),
 		), nil
-	case "openai":
-		base := p.BaseURL
-		if base == "" {
-			base = "https://api.openai.com/v1"
-		}
-		return compat.New(compat.WithBaseURL(base), compat.WithAPIKey(key), compat.WithModel(p.Model), compat.WithMaxTokens(p.MaxTokens)), nil
-	case "compat":
-		if p.BaseURL == "" {
-			return nil, fmt.Errorf("app: compat provider requires base_url")
-		}
-		return compat.New(compat.WithBaseURL(p.BaseURL), compat.WithAPIKey(key), compat.WithModel(p.Model), compat.WithMaxTokens(p.MaxTokens)), nil
-	default:
+	}
+
+	preset, ok := compatPresets[p.Kind]
+	if !ok {
 		return nil, fmt.Errorf("app: unknown provider %q", p.Kind)
 	}
+	base := p.BaseURL
+	if base == "" {
+		base = preset.baseURL
+	}
+	if base == "" {
+		return nil, fmt.Errorf("app: %s provider requires base_url", p.Kind)
+	}
+	return compat.New(
+		compat.WithBaseURL(base),
+		compat.WithAPIKey(key),
+		compat.WithModel(p.Model),
+		compat.WithMaxTokens(p.MaxTokens),
+	), nil
 }
 
 // BuildGrounder constructs the grounder and marker for the configured mode.
