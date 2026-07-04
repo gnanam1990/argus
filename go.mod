@@ -4,7 +4,9 @@ go 1.25.0
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.56.0
+	github.com/fogleman/gg v1.3.0
 	github.com/go-vgo/robotgo v1.0.2
+	golang.org/x/image v0.43.0
 )
 
 require (
@@ -15,6 +17,7 @@ require (
 	github.com/gen2brain/shm v0.2.1 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
+	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/jezek/xgb v1.3.0 // indirect
 	github.com/jezek/xgbutil v0.0.0-20260124183602-9fd151d6a51a // indirect
@@ -39,7 +42,6 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/exp v0.0.0-20260312153236-7ab1446f8b90 // indirect
-	golang.org/x/image v0.38.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 )
