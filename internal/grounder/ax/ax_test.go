@@ -21,7 +21,7 @@ func TestDefaultUnavailable(t *testing.T) {
 func TestWithSource(t *testing.T) {
 	t.Parallel()
 	want := []grounder.Element{{ID: 1, Label: "Save", Interactable: true}}
-	d := ax.New(ax.WithSource(func(context.Context) ([]grounder.Element, error) {
+	d := ax.New(ax.WithSource(func(context.Context, action.Image) ([]grounder.Element, error) {
 		return want, nil
 	}))
 	got, err := d.Detect(context.Background(), action.Image{})
@@ -36,7 +36,7 @@ func TestWithSource(t *testing.T) {
 func TestSourceError(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("dbus down")
-	d := ax.New(ax.WithSource(func(context.Context) ([]grounder.Element, error) {
+	d := ax.New(ax.WithSource(func(context.Context, action.Image) ([]grounder.Element, error) {
 		return nil, boom
 	}))
 	if _, err := d.Detect(context.Background(), action.Image{}); !errors.Is(err, boom) {

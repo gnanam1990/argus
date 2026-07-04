@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>%%ARGUS_TASK%% — Argus Replay</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg:        #0d0d0d;
+    --panel:     #1a1a19;
+    --panel-2:   #202220;
+    --ink:       #ffffff;
+    --ink-dim:   #c3c2b7;
+    --ink-muted: #898781;
+    --line:      #2c2c2a;
+    --border:    rgba(255,255,255,0.10);
+    --accent:    #3987e5;
+    --good:      #0ca30c;
+    --bad:       #d03b3b;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  button, input { font-family: inherit; }
+
+  /* header */
+  header#app-header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px 24px;
+    flex-wrap: wrap;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  .title-block { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+  .brand {
+    color: var(--accent);
+    font-weight: 700;
+    letter-spacing: .12em;
+    font-size: 12px;
+    flex: 0 0 auto;
+  }
+  .task-name {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .meta-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    display: inline-flex;
+    gap: 5px;
+    align-items: baseline;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 2px 8px;
+    font-size: 11px;
+    color: var(--ink-muted);
+    white-space: nowrap;
+  }
+  .chip b { color: var(--ink-dim); font-weight: 600; }
+
+  /* layout */
+  main {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 1fr 420px;
+  }
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; grid-template-rows: 55vh 1fr; }
+    .stage { border-right: none !important; border-bottom: 1px solid var(--line); }
+  }
+
+  /* stage (screenshot pane) */
+  .stage {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    border-right: 1px solid var(--line);
+  }
+  .frame-wrap {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    background: #000;
+    overflow: hidden;
+  }
+  .frame-wrap img#frame {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: none;
+  }
+  .frame-wrap svg#overlay {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+  .frame-empty {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    color: var(--ink-muted);
+    font-size: 12px;
+  }
+  .stage-controls {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+  }
+  .stage-controls .spacer { flex: 1 1 auto; }
+  .hint { color: var(--ink-muted); font-size: 11px; }
+  button.ctl {
+    background: var(--panel-2);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 5px 12px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  button.ctl:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button.ctl:disabled { opacity: .35; cursor: default; }
+  #step-indicator {
+    min-width: 64px;
+    text-align: center;
+    color: var(--ink-dim);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* steps pane */
+  .steps-pane { min-width: 0; overflow-y: auto; background: var(--panel); }
+  .steps-pane::-webkit-scrollbar { width: 10px; }
+  .steps-pane::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; }
+  .steps-pane::-webkit-scrollbar-track { background: var(--panel); }
+  #step-list { list-style: none; margin: 0; padding: 0; }
+  .step-item {
+    padding: 10px 14px 12px;
+    border-bottom: 1px solid var(--line);
+    border-left: 3px solid transparent;
+    cursor: pointer;
+  }
+  .step-item:hover { background: var(--panel-2); }
+  .step-item.active { background: #17233a; border-left-color: var(--accent); }
+  .step-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .step-index { color: var(--accent); font-weight: 700; }
+  .step-tokens { color: var(--ink-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .step-text {
+    margin: 6px 0 0;
+    color: var(--ink-dim);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .step-text.clip {
+    max-height: 3.2em;
+    overflow: hidden;
+  }
+  .step-text.empty { color: var(--ink-muted); font-style: italic; }
+
+  .action-row { display: flex; gap: 7px; align-items: flex-start; margin-top: 6px; font-size: 12px; }
+  .action-dot {
+    flex: 0 0 auto;
+    width: 9px;
+    height: 9px;
+    margin-top: 3px;
+    border-radius: 50%;
+  }
+  .action-label { color: var(--ink); word-break: break-word; }
+  .badge-terminated {
+    margin-left: 6px;
+    padding: 0 4px;
+    color: var(--bad);
+    border: 1px solid var(--bad);
+    border-radius: 3px;
+    font-size: 9px;
+    text-transform: uppercase;
+  }
+  .action-result {
+    position: relative;
+    margin: 4px 0 0 16px;
+    padding: 5px 7px;
+    background: #000;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    color: var(--ink-muted);
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    cursor: pointer;
+  }
+  .action-result:not(.expanded) {
+    max-height: 4.4em;
+    overflow: hidden;
+  }
+  .action-result::after {
+    display: block;
+    margin-top: 3px;
+    color: var(--accent);
+    font-size: 10px;
+  }
+  .action-result:not(.expanded)::after { content: "▸ expand"; }
+  .action-result.expanded::after { content: "▾ collapse"; }
+
+  .empty-state { padding: 16px; color: var(--ink-muted); }
+</style>
+</head>
+<body>
+  <header id="app-header">
+    <div class="title-block">
+      <span class="brand">ARGUS</span>
+      <h1 class="task-name">%%ARGUS_TASK%%</h1>
+    </div>
+    <div class="meta-row" id="meta-row"></div>
+  </header>
+
+  <main>
+    <section class="stage">
+      <div class="frame-wrap">
+        <img id="frame" alt="step screenshot">
+        <svg id="overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet"></svg>
+        <div class="frame-empty" id="frame-empty">no screenshot for this step</div>
+      </div>
+      <div class="stage-controls">
+        <button class="ctl" id="prev" title="Previous step (←)">&larr; prev</button>
+        <span id="step-indicator">0 / 0</span>
+        <button class="ctl" id="next" title="Next step (→)">next &rarr;</button>
+        <button class="ctl" id="play" title="Play / pause (space)">play</button>
+        <span class="spacer"></span>
+        <span class="hint">← → step &middot; space play/pause</span>
+      </div>
+    </section>
+    <aside class="steps-pane">
+      <ol id="step-list"></ol>
+    </aside>
+  </main>
+
+<script>
+(function () {
+  "use strict";
+
+  var COLORS = {
+    click: "#3987e5",
+    move: "#199e70",
+    drag: "#9085e9",
+    scroll: "#c98500",
+    key: "#d55181",
+    cmd: "#d95926",
+    other: "#898781"
+  };
+
+  var data = null;
+  var steps = [];
+  var current = 0;
+  var playing = false;
+  var playTimer = null;
+
+  function byId(id) { return document.getElementById(id); }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  // truncate mirrors internal/tui's helper: collapse newlines, then cut to
+  // n-1 runes plus an ellipsis when the text overruns n.
+  function truncate(s, n) {
+    if (n < 4) n = 4;
+    s = s.replace(/\n/g, " ");
+    if (s.length <= n) return s;
+    return s.slice(0, n - 1) + "…";
+  }
+
+  // goQuote approximates Go's %q for display purposes: escape backslashes
+  // and quotes, and show control whitespace literally.
+  function goQuote(s) {
+    var out = String(s)
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, "\\\"")
+      .replace(/\n/g, "\\n")
+      .replace(/\t/g, "\\t");
+    return "\"" + out + "\"";
+  }
+
+  function hasMark(a) { return typeof a.mark === "number" && a.mark > -1; }
+  function point(a) { return a.point || { x: 0, y: 0 }; }
+
+  // actionLabel renders the same text the TUI shows for an action: coordinate
+  // or set-of-marks index for pointer actions, quoted text for typed input
+  // and shell commands, a joined key chord, and a bare type name otherwise.
+  function actionLabel(a) {
+    switch (a.type) {
+      case "click":
+      case "double_click":
+      case "triple_click":
+      case "move":
+      case "mouse_down":
+      case "mouse_up":
+        if (hasMark(a)) return a.type + " mark " + a.mark;
+        return a.type + " (" + point(a).x + "," + point(a).y + ")";
+      case "type":
+        return "type " + goQuote(truncate(a.text || "", 30));
+      case "key":
+        return "key " + (a.keys || []).join("+");
+      case "run_command":
+        return "run_command " + goQuote(truncate(a.text || "", 40));
+      case "read_file":
+      case "write_file":
+        return a.type + " " + (a.text || "");
+      case "scroll":
+        return "scroll (" + (a.dx || 0) + "," + (a.dy || 0) + ")";
+      default:
+        return a.type;
+    }
+  }
+
+  // actionCategory groups action types into the fixed color set used for
+  // both the step-list dot and the on-image overlay marker.
+  function actionCategory(type) {
+    switch (type) {
+      case "click":
+      case "double_click":
+      case "triple_click":
+      case "mouse_down":
+      case "mouse_up":
+        return "click";
+      case "move":
+        return "move";
+      case "drag":
+        return "drag";
+      case "scroll":
+        return "scroll";
+      case "type":
+      case "key":
+      case "key_down":
+      case "key_up":
+        return "key";
+      case "run_command":
+      case "read_file":
+      case "write_file":
+        return "cmd";
+      default:
+        return "other";
+    }
+  }
+
+  function actionColor(type) { return COLORS[actionCategory(type)] || COLORS.other; }
+
+  // hasOverlayPoint reports whether a's own Point is a meaningful screen
+  // coordinate worth drawing a dot for (drag is handled separately via Path,
+  // and a set-of-marks action's Point is unresolved at record time).
+  function hasOverlayPoint(a) {
+    if (hasMark(a)) return false;
+    switch (a.type) {
+      case "click":
+      case "double_click":
+      case "triple_click":
+      case "move":
+      case "mouse_down":
+      case "mouse_up":
+      case "scroll":
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  function sumUsage(list) {
+    var total = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 };
+    list.forEach(function (s) {
+      var u = s.usage || {};
+      total.input_tokens += u.input_tokens || 0;
+      total.output_tokens += u.output_tokens || 0;
+      total.cache_read_tokens += u.cache_read_tokens || 0;
+      total.cache_write_tokens += u.cache_write_tokens || 0;
+    });
+    return total;
+  }
+
+  function chip(k, v) {
+    return "<span class=\"chip\">" + escapeHtml(k) + " <b>" + escapeHtml(v) + "</b></span>";
+  }
+
+  function renderHeader() {
+    var m = data.manifest || {};
+    var task = m.task || "(untitled trajectory)";
+    document.title = task + " — Argus Replay";
+    var nameEl = document.querySelector(".task-name");
+    if (nameEl) nameEl.textContent = task;
+
+    var total = sumUsage(steps);
+    var parts = [];
+    if (m.model) parts.push(chip("model", m.model));
+    if (m.provider_beta) parts.push(chip("beta", m.provider_beta));
+    if (m.config_hash) parts.push(chip("config", m.config_hash));
+    if (m.git_sha) parts.push(chip("sha", m.git_sha));
+    parts.push(chip("steps", String(steps.length)));
+    parts.push(chip("tokens in", String(total.input_tokens)));
+    parts.push(chip("tokens out", String(total.output_tokens)));
+    if (total.cache_read_tokens) parts.push(chip("cache read", String(total.cache_read_tokens)));
+    byId("meta-row").innerHTML = parts.join("");
+  }
+
+  function renderStepList() {
+    var list = byId("step-list");
+    list.innerHTML = "";
+    steps.forEach(function (step, i) {
+      var li = document.createElement("li");
+      li.className = "step-item";
+      li.dataset.index = String(i);
+      li.addEventListener("click", function () { stopPlay(); goTo(i); });
+
+      var head = document.createElement("div");
+      head.className = "step-head";
+      var idx = document.createElement("span");
+      idx.className = "step-index";
+      idx.textContent = "#" + step.index;
+      head.appendChild(idx);
+      var tok = document.createElement("span");
+      tok.className = "step-tokens";
+      var u = step.usage || {};
+      tok.textContent = (u.input_tokens || 0) + " in / " + (u.output_tokens || 0) + " out";
+      head.appendChild(tok);
+      li.appendChild(head);
+
+      var text = document.createElement("div");
+      if (step.text) {
+        text.className = "step-text clip";
+        text.textContent = step.text;
+        text.title = "click to expand";
+        text.addEventListener("click", function (e) {
+          e.stopPropagation();
+          text.classList.toggle("clip");
+        });
+      } else {
+        text.className = "step-text empty";
+        text.textContent = "(no reasoning text)";
+      }
+      li.appendChild(text);
+
+      (step.actions || []).forEach(function (a, ai) {
+        var row = document.createElement("div");
+        row.className = "action-row";
+        var dot = document.createElement("span");
+        dot.className = "action-dot";
+        dot.style.background = actionColor(a.type);
+        row.appendChild(dot);
+        var label = document.createElement("span");
+        label.className = "action-label";
+        label.textContent = actionLabel(a);
+        row.appendChild(label);
+
+        var res = (step.results || [])[ai];
+        if (res && res.terminated) {
+          var badge = document.createElement("span");
+          badge.className = "badge-terminated";
+          badge.textContent = "terminated";
+          row.appendChild(badge);
+        }
+        li.appendChild(row);
+
+        if (res && res.output) {
+          var out = document.createElement("pre");
+          out.className = "action-result";
+          out.textContent = res.output;
+          out.title = "click to expand/collapse";
+          out.addEventListener("click", function (e) {
+            e.stopPropagation();
+            out.classList.toggle("expanded");
+          });
+          li.appendChild(out);
+        }
+      });
+
+      list.appendChild(li);
+    });
+  }
+
+  function updateActiveItem() {
+    var items = list_items();
+    items.forEach(function (el) {
+      el.classList.toggle("active", Number(el.dataset.index) === current);
+    });
+    var active = document.querySelector(".step-item.active");
+    if (active && active.scrollIntoView) active.scrollIntoView({ block: "nearest" });
+    byId("step-indicator").textContent = steps.length ? (current + 1) + " / " + steps.length : "0 / 0";
+    byId("prev").disabled = current <= 0;
+    byId("next").disabled = current >= steps.length - 1;
+  }
+
+  function list_items() {
+    return Array.prototype.slice.call(document.querySelectorAll(".step-item"));
+  }
+
+  function renderStage() {
+    var overlay = byId("overlay");
+    var img = byId("frame");
+    var empty = byId("frame-empty");
+    overlay.innerHTML = "";
+
+    var step = steps[current];
+    if (!step) {
+      img.style.display = "none";
+      empty.style.display = "flex";
+      empty.textContent = "no steps recorded";
+      return;
+    }
+
+    if (step.screenshot_file) {
+      empty.style.display = "none";
+      img.onload = function () {
+        overlay.setAttribute("viewBox", "0 0 " + img.naturalWidth + " " + img.naturalHeight);
+        drawOverlay(overlay, step);
+      };
+      img.style.display = "block";
+      img.src = "/shots/" + encodeURIComponent(step.screenshot_file);
+    } else {
+      img.style.display = "none";
+      img.removeAttribute("src");
+      empty.textContent = "no screenshot for step " + step.index;
+      empty.style.display = "flex";
+    }
+  }
+
+  function svgEl(name) { return document.createElementNS("http://www.w3.org/2000/svg", name); }
+
+  function dotMark(x, y, colorHex, label) {
+    var g = svgEl("g");
+    var c = svgEl("circle");
+    c.setAttribute("cx", String(x));
+    c.setAttribute("cy", String(y));
+    c.setAttribute("r", "11");
+    c.setAttribute("fill", colorHex);
+    c.setAttribute("fill-opacity", "0.28");
+    c.setAttribute("stroke", colorHex);
+    c.setAttribute("stroke-width", "2");
+    c.setAttribute("vector-effect", "non-scaling-stroke");
+    g.appendChild(c);
+    var t = svgEl("text");
+    t.setAttribute("x", String(x));
+    t.setAttribute("y", String(y));
+    t.setAttribute("text-anchor", "middle");
+    t.setAttribute("dominant-baseline", "central");
+    t.setAttribute("font-size", "11");
+    t.setAttribute("font-family", "ui-monospace, Menlo, monospace");
+    t.setAttribute("font-weight", "700");
+    t.setAttribute("fill", "#0d0d0d");
+    t.setAttribute("vector-effect", "non-scaling-stroke");
+    t.textContent = String(label);
+    g.appendChild(t);
+    return g;
+  }
+
+  function drawOverlay(overlay, step) {
+    (step.actions || []).forEach(function (a, ai) {
+      var color = actionColor(a.type);
+      if (a.type === "drag" && Array.isArray(a.path) && a.path.length > 1) {
+        var poly = svgEl("polyline");
+        poly.setAttribute("points", a.path.map(function (p) { return p.x + "," + p.y; }).join(" "));
+        poly.setAttribute("fill", "none");
+        poly.setAttribute("stroke", color);
+        poly.setAttribute("stroke-width", "2");
+        poly.setAttribute("vector-effect", "non-scaling-stroke");
+        overlay.appendChild(poly);
+        a.path.forEach(function (p) { overlay.appendChild(dotMark(p.x, p.y, color, ai + 1)); });
+        return;
+      }
+      if (!hasOverlayPoint(a)) return;
+      var p = point(a);
+      overlay.appendChild(dotMark(p.x, p.y, color, ai + 1));
+    });
+  }
+
+  function goTo(i) {
+    if (!steps.length) return;
+    if (i < 0) i = 0;
+    if (i > steps.length - 1) i = steps.length - 1;
+    current = i;
+    updateActiveItem();
+    renderStage();
+  }
+
+  function togglePlay() {
+    if (playing) {
+      stopPlay();
+      return;
+    }
+    if (current >= steps.length - 1) current = -1; // restart a finished run
+    playing = true;
+    byId("play").textContent = "pause";
+    playTimer = setInterval(function () {
+      if (current >= steps.length - 1) {
+        stopPlay();
+        return;
+      }
+      goTo(current + 1);
+    }, 600);
+  }
+
+  function stopPlay() {
+    playing = false;
+    if (playTimer) clearInterval(playTimer);
+    playTimer = null;
+    byId("play").textContent = "play";
+  }
+
+  function onKey(e) {
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      stopPlay();
+      goTo(current - 1);
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      stopPlay();
+      goTo(current + 1);
+    } else if (e.code === "Space" || e.key === " ") {
+      e.preventDefault();
+      togglePlay();
+    }
+  }
+
+  function showFatal(msg) {
+    document.body.innerHTML = "<div class=\"empty-state\">" + escapeHtml(msg) + "</div>";
+  }
+
+  function boot() {
+    fetch("/api/trajectory")
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(function (json) {
+        data = json;
+        steps = data.steps || [];
+        renderHeader();
+        renderStepList();
+        goTo(0);
+        byId("prev").addEventListener("click", function () { stopPlay(); goTo(current - 1); });
+        byId("next").addEventListener("click", function () { stopPlay(); goTo(current + 1); });
+        byId("play").addEventListener("click", togglePlay);
+        window.addEventListener("keydown", onKey);
+      })
+      .catch(function (err) {
+        showFatal("failed to load trajectory: " + err.message);
+      });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
+})();
+</script>
+</body>
+</html>

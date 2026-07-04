@@ -97,13 +97,17 @@ bearer token.
 | Mode | Detector | When |
 |---|---|---|
 | `none` | — | Native computer-use providers (Anthropic), **and vision models** (e.g. `qwen2.5vl` on Ollama) that read the screenshot and emit pixel coordinates directly. |
-| `ax` | accessibility tree | Fast, exact, free; native apps. Needs an accessibility backend — see the note below. |
+| `ax` | accessibility tree | Fast, exact, free; native apps. **macOS: works today** via the System Events tree (see below). Linux/Windows backends are not implemented yet. |
 | `omniparser` | vision service (GPU) | Canvas/WebGL/Electron surfaces. AGPL weights — see `omniparser.md`. |
-| `chain` | ax → vision fallback | Best for emulated providers once a backend is wired. |
+| `chain` | ax → vision fallback | Best for emulated providers: exact tree hits when available, vision otherwise. |
 
-> **`ax` availability.** The accessibility-tree detector ships with the seam but
-> no host backend yet, so on macOS/Windows/Linux it reports *unavailable* and the
-> run aborts on the first observation. Until an AT-SPI/AXUIElement source lands,
-> use `none` (vision models, which pick coordinates from the raw screenshot) or
-> `omniparser`/`chain` (with the vision service running). This is why the
-> emulated-provider examples ship with `grounding.mode: none`.
+> **`ax` on macOS.** The detector walks the frontmost app's accessibility tree
+> (bounded depth/size, ~5s budget) and scales element frames from screen points
+> to screenshot pixels, so marks line up on Retina displays. It requires the
+> **Accessibility** permission for your terminal (System Settings → Privacy &
+> Security → Accessibility — this is separate from Screen Recording and from
+> Automation), then a terminal restart. Without it — and on Linux/Windows,
+> where no tree source is implemented yet — `ax` reports *unavailable*: the
+> `chain` mode falls back to vision, while plain `ax` mode fails the run. The
+> emulated-provider examples ship with `grounding.mode: none`, which needs no
+> permission and no service.

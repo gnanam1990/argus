@@ -181,9 +181,11 @@ func BuildGrounder(cfg config.Config) (grounder.Grounder, grounder.Marker) {
 	case "omniparser":
 		return omniparser.New(g.OmniParserURL, omniparser.WithMinConfidence(g.MinConfidence)), marker
 	case "ax":
-		return ax.New(), marker
+		// HostSource walks the macOS accessibility tree (needs the Accessibility
+		// permission); on other hosts it reports unavailable.
+		return ax.New(ax.WithSource(ax.HostSource())), marker
 	case "chain":
-		return chain.New(ax.New(), omniparser.New(g.OmniParserURL, omniparser.WithMinConfidence(g.MinConfidence))), marker
+		return chain.New(ax.New(ax.WithSource(ax.HostSource())), omniparser.New(g.OmniParserURL, omniparser.WithMinConfidence(g.MinConfidence))), marker
 	default:
 		return nil, marker
 	}

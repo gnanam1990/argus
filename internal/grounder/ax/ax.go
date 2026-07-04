@@ -20,8 +20,12 @@ import (
 // platform, headless, or a canvas/WebGL surface with no semantic tree).
 var ErrUnavailable = errors.New("ax: accessibility tree unavailable")
 
-// TreeSource reads interactable elements from the platform accessibility tree.
-type TreeSource func(ctx context.Context) ([]grounder.Element, error)
+// TreeSource reads interactable elements from the platform accessibility
+// tree. It receives the same screenshot passed to Detect so an implementation
+// that must relate logical/point coordinates to screenshot-pixel space (e.g.
+// the macOS source scaling AXUIElement points to HiDPI screenshot pixels) can
+// size against it; a source that doesn't need the image may ignore it.
+type TreeSource func(ctx context.Context, img action.Image) ([]grounder.Element, error)
 
 // Detector grounds via the accessibility tree.
 type Detector struct {
@@ -46,9 +50,9 @@ func New(opts ...Option) *Detector {
 var _ grounder.Grounder = (*Detector)(nil)
 
 // Detect returns the accessibility-tree elements, or ErrUnavailable.
-func (d *Detector) Detect(ctx context.Context, _ action.Image) ([]grounder.Element, error) {
+func (d *Detector) Detect(ctx context.Context, img action.Image) ([]grounder.Element, error) {
 	if d.source == nil {
 		return nil, ErrUnavailable
 	}
-	return d.source(ctx)
+	return d.source(ctx, img)
 }

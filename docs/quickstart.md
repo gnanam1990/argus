@@ -45,7 +45,27 @@ argus run --config examples/config/host-anthropic.json --trajectory ./runs/first
 ```
 
 The trajectory directory contains `manifest.json` (provenance), `steps.jsonl`,
-and one PNG per observation, with secrets masked.
+and one PNG per observation, with secrets masked. Replay it in the browser:
+
+```sh
+argus view ./runs/first
+```
+
+## Gated capabilities (run_command, file ops)
+
+System-level actions are **off by default**. Enable them per config and pair
+them with approval:
+
+```json
+{
+  "agent": { "capabilities": ["run_command"], "require_approval": true }
+}
+```
+
+With approval on, each `run_command` prompts `[y/N]` (inline in the TUI).
+Unattended runs (approval off, or `argus eval`) fail closed: the injection
+guard denies sensitive actions instead of running them silently. Extra secret
+values can be masked everywhere via `ARGUS_SECRETS=val1,val2`.
 
 ## Interactive view (`--tui`)
 

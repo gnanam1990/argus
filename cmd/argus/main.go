@@ -48,6 +48,10 @@ func run(args []string, out io.Writer) error {
 		return runTask(args[1:], out)
 	case "eval":
 		return evalCmd(args[1:], out)
+	case "view":
+		return viewCmd(args[1:], out)
+	case "bench":
+		return benchCmd(args[1:], out)
 	case "auth":
 		return authCmd(args[1:], out)
 	default:
@@ -271,6 +275,8 @@ func printUsage(out io.Writer) {
 Usage:
   argus run [--config FILE] [--trajectory DIR] [--dry-run] [--tui] "TASK"   Run a task
   argus eval --manifest FILE [--config FILE]                        Evaluate tasks
+  argus view DIR [--addr HOST:PORT]                                 Replay a recorded trajectory in the browser
+  argus bench DIR [--config FILE]                                   Score click-grounding accuracy on a dataset
   argus auth login|status|logout <provider>                         OAuth logins (xai, chatgpt)
   argus doctor [--config FILE]                                      Diagnose the environment
   argus version                                                     Print version
