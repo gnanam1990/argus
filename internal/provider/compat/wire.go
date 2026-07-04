@@ -3,12 +3,18 @@ package compat
 // OpenAI Chat Completions wire types (the subset Argus uses).
 
 type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Tools       []tool        `json:"tools,omitempty"`
-	ToolChoice  string        `json:"tool_choice,omitempty"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	Temperature *float64      `json:"temperature,omitempty"`
+	Model      string        `json:"model"`
+	Messages   []chatMessage `json:"messages"`
+	Tools      []tool        `json:"tools,omitempty"`
+	ToolChoice string        `json:"tool_choice,omitempty"`
+	// Exactly one of MaxTokens/MaxCompletionTokens is set by Step, chosen by
+	// usesMaxCompletionTokens: o-series/gpt-5.x reject max_tokens outright,
+	// while older API versions and self-hosted servers (e.g. Ollama) expect
+	// it and don't understand max_completion_tokens.
+	MaxTokens           int      `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int      `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64 `json:"temperature,omitempty"`
+	Seed                *int     `json:"seed,omitempty"`
 }
 
 // chatMessage.Content is either a string (system/tool) or []contentPart (user).

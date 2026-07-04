@@ -112,7 +112,6 @@ func (p *Provider) Step(ctx context.Context, conv *model.Conversation, opts ...m
 	params := sdk.BetaMessageNewParams{
 		Model:     p.modelID,
 		MaxTokens: int64(maxTok),
-		Messages:  p.messages,
 		Tools: []sdk.BetaToolUnionParam{
 			sdk.BetaToolUnionParamOfComputerUseTool20251124(int64(p.displayH), int64(p.displayW)),
 		},
@@ -122,17 +121,51 @@ func (p *Provider) Step(ctx context.Context, conv *model.Conversation, opts ...m
 		params.System = []sdk.BetaTextBlockParam{{Text: conv.System}}
 	}
 
-	resp, err := p.client.Beta.Messages.New(ctx, params)
+	resp, err := p.call(ctx, params)
 	if err != nil {
-		return nil, wrapErr(err)
+		return nil, err
 	}
-	p.messages = append(p.messages, resp.ToParam())
-	return decode(resp), nil
+	return decode(resp)
+}
+
+// call invokes the Messages API and applies the documented pause_turn
+// recovery: a paused long-running turn is resumed by resending the request
+// with the paused assistant turn appended as-is — see BetaStopReasonPauseTurn
+// ("you may provide the response back as-is in a subsequent request to let
+// the model continue") — exactly once. A second consecutive pause is
+// returned to the caller (decode maps it like any other non-tool-use stop)
+// rather than retried forever. Every response, paused or not, is appended to
+// the private history so it stays a faithful transcript of what the API
+// actually said.
+func (p *Provider) call(ctx context.Context, params sdk.BetaMessageNewParams) (*sdk.BetaMessage, error) {
+	const maxPauseResumes = 1
+	for attempt := 0; ; attempt++ {
+		params.Messages = p.messages
+		resp, err := p.client.Beta.Messages.New(ctx, params)
+		if err != nil {
+			return nil, wrapErr(err)
+		}
+		p.messages = append(p.messages, resp.ToParam())
+		if resp.StopReason != sdk.BetaStopReasonPauseTurn || attempt >= maxPauseResumes {
+			return resp, nil
+		}
+	}
 }
 
 // encodeNew appends SDK params for neutral messages not yet encoded, skipping
 // assistant turns (which are stored natively via ToParam after each Step).
 func (p *Provider) encodeNew(conv *model.Conversation) {
+	if p.encoded > len(conv.Messages) {
+		// The conversation is shorter than what we've already encoded: this is
+		// not "no new messages", it's a different (or reset) conversation —
+		// e.g. a second Run reusing the same provider instance. Resending the
+		// stale private history would either replay a finished task's actions
+		// or desync tool_use/tool_result pairing against the new
+		// conversation, so start this adapter's wire history over from
+		// scratch.
+		p.messages = nil
+		p.encoded = 0
+	}
 	for i := p.encoded; i < len(conv.Messages); i++ {
 		m := conv.Messages[i]
 		switch m.Role {
@@ -238,20 +271,45 @@ func imageBlock(img action.Image) sdk.BetaContentBlockParamUnion {
 	})
 }
 
+// resultText renders an action result as the text fed back to the model. A
+// cursor_position result carries its answer only in Cursor (Output is
+// empty), so without this the model would just see the generic "action
+// completed" text and never learn where the cursor actually is. Cursor is
+// reported whenever it is non-zero; the accepted limitation is that a real
+// cursor position of exactly (0, 0) is indistinguishable from "no cursor
+// result" and won't be reported, since Result has no separate "cursor is
+// set" bit to check instead.
 func resultText(r action.Result) string {
+	text := "action completed; see attached screenshot"
 	switch {
 	case r.Output != "":
-		return r.Output
+		text = r.Output
 	case r.Terminated:
-		return "terminated"
-	default:
-		return "action completed; see attached screenshot"
+		text = "terminated"
 	}
+	if r.Cursor != (action.Point{}) {
+		text += fmt.Sprintf("\ncursor: (%d, %d)", r.Cursor.X, r.Cursor.Y)
+	}
+	return text
 }
 
 // decode converts an API response into a neutral Turn, normalizing each
 // tool_use into a canonical action (repairing malformed calls).
-func decode(resp *sdk.BetaMessage) *model.Turn {
+//
+// A refusal stop reason has no legitimate Turn to build (the SDK's own tool
+// runner treats it the same way — see BetaStopReasonRefusal in
+// betatoolrunner.go: tool calls before a refusal belong to a dead
+// conversation) and is reported as an error instead.
+// model_context_window_exceeded is mapped like max_tokens: both mean the
+// response was cut short by a length limit, just a different one.
+// pause_turn never reaches here as the stop reason of the FINAL response
+// call already resent it once (see call); a still-paused response after that
+// retry falls through to the default case, i.e. StopEnd.
+func decode(resp *sdk.BetaMessage) (*model.Turn, error) {
+	if resp.StopReason == sdk.BetaStopReasonRefusal {
+		return nil, errors.New("anthropic: model refused the request")
+	}
+
 	msg := model.Message{Role: model.RoleAssistant}
 	for _, block := range resp.Content {
 		switch b := block.AsAny().(type) {
@@ -273,12 +331,12 @@ func decode(resp *sdk.BetaMessage) *model.Turn {
 	switch resp.StopReason {
 	case sdk.BetaStopReasonToolUse:
 		turn.Stop = model.StopAction
-	case sdk.BetaStopReasonMaxTokens:
+	case sdk.BetaStopReasonMaxTokens, sdk.BetaStopReasonModelContextWindowExceeded:
 		turn.Stop = model.StopMaxTokens
 	default:
 		turn.Stop = model.StopEnd
 	}
-	return turn
+	return turn, nil
 }
 
 func usage(u sdk.BetaUsage) model.Usage {

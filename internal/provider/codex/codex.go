@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -68,11 +69,27 @@ func WithImageRetention(n int) Option { return func(p *Provider) { p.imageRetent
 
 // New builds a Codex provider.
 func New(opts ...Option) *Provider {
-	p := &Provider{http: http.DefaultClient, baseURL: defaultBaseURL, modelID: "gpt-5.5"}
+	p := &Provider{http: defaultHTTPClient(), baseURL: defaultBaseURL, modelID: "gpt-5.5"}
 	for _, o := range opts {
 		o(p)
 	}
 	return p
+}
+
+// defaultHTTPClient is used when WithHTTPClient is not given. http.DefaultClient
+// has no timeout at all, and the agent loop's context carries no deadline
+// either, so a server that accepts the connection but never answers would
+// otherwise wedge the run forever (H5). ResponseHeaderTimeout bounds only the
+// wait for the initial response headers; Client.Timeout is deliberately left
+// unset because it would also bound the body read, and the Responses backend
+// streams a long-lived SSE body that can legitimately take a while.
+func defaultHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			ResponseHeaderTimeout: 60 * time.Second,
+			Proxy:                 http.ProxyFromEnvironment,
+		},
+	}
 }
 
 var _ model.Provider = (*Provider)(nil)
@@ -158,6 +175,16 @@ func (p *Provider) send(ctx context.Context, body []byte, retried bool) (*model.
 }
 
 func (p *Provider) encodeNew(conv *model.Conversation) {
+	if p.encoded > len(conv.Messages) {
+		// The conversation is shorter than what we've already encoded: this is
+		// not "no new messages", it's a different (or reset) conversation —
+		// e.g. a second Run reusing the same provider instance. Resending the
+		// stale private history would either replay a finished task's actions
+		// or desync call_id pairing against the new conversation, so start
+		// this adapter's wire history over from scratch.
+		p.input = nil
+		p.encoded = 0
+	}
 	for i := p.encoded; i < len(conv.Messages); i++ {
 		m := conv.Messages[i]
 		switch m.Role {
@@ -262,14 +289,26 @@ func dataURL(img action.Image) string {
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(img.Data)
 }
 
+// resultText renders an action result as the text fed back to the model. A
+// cursor_position result carries its answer only in Cursor (Output is
+// empty), so without this the model would just see the generic "action
+// completed" text and never learn where the cursor actually is. Cursor is
+// reported whenever it is non-zero; the accepted limitation is that a real
+// cursor position of exactly (0, 0) is indistinguishable from "no cursor
+// result" and won't be reported, since Result has no separate "cursor is
+// set" bit to check instead.
 func resultText(r action.Result) string {
-	if r.Output != "" {
-		return r.Output
+	text := "action completed; see attached screenshot"
+	switch {
+	case r.Output != "":
+		text = r.Output
+	case r.Terminated:
+		text = "terminated"
 	}
-	if r.Terminated {
-		return "terminated"
+	if r.Cursor != (action.Point{}) {
+		text += fmt.Sprintf("\ncursor: (%d, %d)", r.Cursor.X, r.Cursor.Y)
 	}
-	return "action completed; see attached screenshot"
+	return text
 }
 
 // readErrorBody drains up to 2 KiB of an error response without risking a
@@ -304,14 +343,34 @@ func readErrorBody(r io.Reader) string {
 	return strings.TrimSpace(buf.String())
 }
 
-// call accumulates a streamed function_call.
+// call accumulates a streamed function_call, tagged with its position in the
+// response's output array so a sibling reasoning item (see decodeStream) can
+// be replayed in the right relative order ahead of it.
 type call struct {
 	callID string
 	args   strings.Builder
+	index  int
+}
+
+// replayItem is a raw item to splice into the history replayed to the model
+// on a later request, tagged with its position in the response's output
+// array. Currently built from reasoning items (captured verbatim off
+// response.output_item.done) and function_call items (built from the
+// accumulated call args), merged and sorted so reasoning correctly precedes
+// the sibling function_call it produced.
+type replayItem struct {
+	index int
+	item  any
 }
 
 // decodeStream reads the Responses SSE stream into a Turn plus the assistant
 // output items to append to history (raw, so no re-normalization is needed).
+//
+// A stream that ends without a response.completed event is always an error
+// (H4): the caller must never receive a turn that looks like a legitimate
+// stop (e.g. a token-limit truncation) when the connection simply dropped,
+// the backend errored out mid-response, or a per-event decode failed —
+// whether or not a function_call had already fully arrived by then.
 func decodeStream(r io.Reader) (*model.Turn, []any, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
@@ -319,8 +378,10 @@ func decodeStream(r io.Reader) (*model.Turn, []any, error) {
 	var text strings.Builder
 	calls := map[string]*call{}
 	var order []string
+	var reasoning []replayItem
 	var usage model.Usage
 	completed := false
+	decodeFailures := 0
 
 	for sc.Scan() {
 		line := sc.Text()
@@ -333,6 +394,7 @@ func decodeStream(r io.Reader) (*model.Turn, []any, error) {
 		}
 		var ev sseEvent
 		if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+			decodeFailures++
 			continue
 		}
 		switch ev.Type {
@@ -348,12 +410,26 @@ func decodeStream(r io.Reader) (*model.Turn, []any, error) {
 				if cid == "" {
 					cid = ev.Item.ID
 				}
-				calls[key] = &call{callID: cid}
+				calls[key] = &call{callID: cid, index: ev.OutputIndex}
 				order = append(order, key)
 			}
 		case "response.function_call_arguments.delta":
 			if c := calls[ev.ItemID]; c != nil {
 				c.args.WriteString(ev.Delta)
+			}
+		case "response.output_item.done":
+			// When reasoning is configured, the Responses backend
+			// (store:false) expects a reasoning item replayed verbatim
+			// alongside its sibling function_call/message in a later
+			// request's input. Capture its raw JSON as emitted rather than
+			// modeling its (large, backend-specific) shape.
+			if ev.Item.Type == "reasoning" {
+				if raw := doneItemJSON(payload); raw != nil {
+					var v any
+					if err := json.Unmarshal(raw, &v); err == nil {
+						reasoning = append(reasoning, replayItem{index: ev.OutputIndex, item: v})
+					}
+				}
 			}
 		case "response.completed":
 			usage = model.Usage{
@@ -363,11 +439,17 @@ func decodeStream(r io.Reader) (*model.Turn, []any, error) {
 			}
 			completed = true
 		case "response.failed", "response.error":
-			return nil, nil, fmt.Errorf("codex: response failed")
+			return nil, nil, fmt.Errorf("codex: %s: %s", ev.Type, errorDetail(ev.Error))
 		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, nil, fmt.Errorf("codex stream: %w", err)
+	}
+	if !completed {
+		if decodeFailures > 0 {
+			return nil, nil, fmt.Errorf("codex: stream ended before completion (%d event(s) failed to decode)", decodeFailures)
+		}
+		return nil, nil, fmt.Errorf("codex: stream ended before completion")
 	}
 
 	msg := model.Message{Role: model.RoleAssistant}
@@ -379,6 +461,8 @@ func decodeStream(r io.Reader) (*model.Turn, []any, error) {
 			"content": []map[string]any{{"type": "output_text", "text": t}},
 		})
 	}
+
+	callItems := make([]replayItem, 0, len(order))
 	for _, key := range order {
 		c := calls[key]
 		args := c.args.String()
@@ -387,19 +471,50 @@ func decodeStream(r io.Reader) (*model.Turn, []any, error) {
 			a = normalize.Repair()
 		}
 		msg.Content = append(msg.Content, model.ActionUse(c.callID, a))
-		items = append(items, map[string]any{
+		callItems = append(callItems, replayItem{index: c.index, item: map[string]any{
 			"type": "function_call", "call_id": c.callID, "name": "computer", "arguments": args,
-		})
+		}})
+	}
+
+	// Merge reasoning items with their sibling function_call items by output
+	// position (not "all reasoning, then all calls") so a multi-call turn
+	// with interleaved reasoning replays in the original order.
+	merged := append(append([]replayItem{}, reasoning...), callItems...)
+	sort.SliceStable(merged, func(i, j int) bool { return merged[i].index < merged[j].index })
+	for _, m := range merged {
+		items = append(items, m.item)
 	}
 
 	turn := &model.Turn{Message: msg, Usage: usage}
-	switch {
-	case len(order) > 0:
+	if len(order) > 0 {
 		turn.Stop = model.StopAction
-	case completed:
+	} else {
 		turn.Stop = model.StopEnd
-	default:
-		turn.Stop = model.StopMaxTokens
 	}
 	return turn, items, nil
+}
+
+// doneItemJSON extracts the raw "item" object from a
+// response.output_item.done SSE payload, so it can be replayed verbatim
+// later without argus modeling its full (large, backend-specific) shape.
+func doneItemJSON(payload string) json.RawMessage {
+	var env struct {
+		Item json.RawMessage `json:"item"`
+	}
+	if err := json.Unmarshal([]byte(payload), &env); err != nil || len(env.Item) == 0 {
+		return nil
+	}
+	return env.Item
+}
+
+// errorDetail renders a response.failed/response.error event's error payload
+// for the error message, so the underlying reason (e.g. a content-policy
+// refusal or an upstream 5xx passed through by the backend) is visible
+// instead of a bare "stream failed".
+func errorDetail(raw json.RawMessage) string {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return "(no error payload)"
+	}
+	return s
 }

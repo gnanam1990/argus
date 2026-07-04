@@ -129,6 +129,131 @@ func TestAnthropicWaitDefault(t *testing.T) {
 	}
 }
 
+// TestAnthropicFloatCoordinatesRound covers H3: models routinely emit
+// fractional pixels ("coordinate":[820.5, 400.2]); those must round to the
+// nearest int, not fail to unmarshal (which would silently fall through to
+// Repair()).
+func TestAnthropicFloatCoordinatesRound(t *testing.T) {
+	t.Parallel()
+	got, err := Anthropic([]byte(`{"action":"left_click","coordinate":[820.5,400.2]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Point != (action.Point{X: 821, Y: 400}) {
+		t.Errorf("point = %+v, want (821,400)", got.Point)
+	}
+}
+
+func TestAnthropicFloatCoordinatesRoundNegative(t *testing.T) {
+	t.Parallel()
+	got, err := Anthropic([]byte(`{"action":"left_click","coordinate":[-5.5,-2.4]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// math.Round rounds half away from zero: -5.5 -> -6.
+	if got.Point != (action.Point{X: -6, Y: -2}) {
+		t.Errorf("point = %+v, want (-6,-2)", got.Point)
+	}
+}
+
+func TestAnthropicFloatCoordinateArray(t *testing.T) {
+	t.Parallel()
+	got, err := Anthropic([]byte(`{"action":"mouse_move","coordinate":[100.7,200.2]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Point != (action.Point{X: 101, Y: 200}) {
+		t.Errorf("point = %+v, want (101,200)", got.Point)
+	}
+}
+
+func TestAnthropicFloatDragPath(t *testing.T) {
+	t.Parallel()
+	got, err := Anthropic([]byte(`{"action":"left_click_drag","start_coordinate":[0.4,0.6],"coordinate":[10.5,10.5]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []action.Point{{X: 0, Y: 1}, {X: 11, Y: 11}}
+	if len(got.Path) != 2 || got.Path[0] != want[0] || got.Path[1] != want[1] {
+		t.Errorf("path = %+v, want %+v", got.Path, want)
+	}
+}
+
+// TestAnthropicMissingCoordinateErrors covers the missing-coordinate guard: a
+// click/move/drag-family action with no (or a short) coordinate must error
+// out of Anthropic() rather than default to Point{0,0} — every adapter's
+// caller turns that error into Repair() (a safe screenshot no-op) instead of
+// clicking the macOS Apple-menu corner.
+func TestAnthropicMissingCoordinateErrors(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{
+		`{"action":"left_click"}`,
+		`{"action":"right_click"}`,
+		`{"action":"middle_click"}`,
+		`{"action":"double_click"}`,
+		`{"action":"triple_click"}`,
+		`{"action":"mouse_move"}`,
+		`{"action":"mouse_move","coordinate":[]}`,
+		`{"action":"mouse_move","coordinate":[5]}`,
+		`{"action":"left_mouse_down"}`,
+		`{"action":"left_mouse_up"}`,
+		`{"action":"left_click_drag","coordinate":[10,10]}`,     // missing start_coordinate
+		`{"action":"left_click_drag","start_coordinate":[0,0]}`, // missing coordinate
+	} {
+		if _, err := Anthropic([]byte(raw)); err == nil {
+			t.Errorf("Anthropic(%s) = nil error, want missing-coordinate error", raw)
+		}
+	}
+}
+
+// TestAnthropicScrollToleratesMissingCoordinate confirms scroll is
+// deliberately NOT in the missing-coordinate guard (unlike click/move/drag):
+// Validate only requires a non-zero delta for Scroll, and models commonly
+// scroll without restating a coordinate.
+func TestAnthropicScrollToleratesMissingCoordinate(t *testing.T) {
+	t.Parallel()
+	got, err := Anthropic([]byte(`{"action":"scroll","scroll_direction":"down"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Point != (action.Point{}) || got.DY != 1 {
+		t.Errorf("got = %+v, want zero point / dy=1", got)
+	}
+}
+
+// TestKeySplitting covers splitKeys's literal-"+" escaping: an empty segment
+// produced by a doubled or trailing separator is the literal "+" key itself.
+func TestKeySplitting(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		text string
+		want []string
+	}{
+		{"ctrl++", []string{"ctrl", "+"}},
+		{"+", []string{"+"}},
+		{"ctrl+shift+p", []string{"ctrl", "shift", "p"}},
+		{"cmd++", []string{"cmd", "+"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			t.Parallel()
+			raw := `{"action":"key","text":"` + tt.text + `"}`
+			got, err := Anthropic([]byte(raw))
+			if err != nil {
+				t.Fatalf("Anthropic(%s): %v", raw, err)
+			}
+			if len(got.Keys) != len(tt.want) {
+				t.Fatalf("splitKeys(%q) = %v, want %v", tt.text, got.Keys, tt.want)
+			}
+			for i := range tt.want {
+				if got.Keys[i] != tt.want[i] {
+					t.Errorf("splitKeys(%q) = %v, want %v", tt.text, got.Keys, tt.want)
+				}
+			}
+		})
+	}
+}
+
 func TestAnthropicErrors(t *testing.T) {
 	t.Parallel()
 	bad := []string{

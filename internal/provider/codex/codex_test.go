@@ -322,3 +322,206 @@ func TestImageRetentionZeroKeepsAll(t *testing.T) {
 		t.Errorf("pruned placeholders in 4th request = %d, want 0", pruned)
 	}
 }
+
+// TestStepStreamEndsWithoutCompletedErrors covers H4: a clean EOF with no
+// response.completed event must be an error, never a fabricated turn (the
+// prior behavior silently reported a truncation stop on what could be a
+// dropped connection).
+func TestStepStreamEndsWithoutCompletedErrors(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, sse(`{"type":"response.output_text.delta","delta":"partial"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := codex.New(codex.WithBaseURL(srv.URL), codex.WithTokenSource(staticToken("AT", "ACCT")))
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("x"))
+
+	_, err := p.Step(context.Background(), conv)
+	if err == nil || !strings.Contains(err.Error(), "stream ended before completion") {
+		t.Errorf("err = %v, want \"stream ended before completion\"", err)
+	}
+}
+
+// TestStepStreamEndsWithFunctionCallButNoCompletedStillErrors covers the
+// "NO, still incomplete" clarification in H4: even a fully-formed
+// function_call is not enough to call the turn legitimate without
+// response.completed.
+func TestStepStreamEndsWithFunctionCallButNoCompletedStillErrors(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, sse(
+			`{"type":"response.output_item.added","item_id":"i1","item":{"type":"function_call","call_id":"call_1","name":"computer"}}`,
+			`{"type":"response.function_call_arguments.delta","item_id":"i1","delta":"{\"action\":\"click\",\"x\":10,\"y\":20}"}`,
+			`{"type":"response.output_item.done","item_id":"i1"}`,
+			// deliberately no response.completed
+		))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := codex.New(codex.WithBaseURL(srv.URL), codex.WithTokenSource(staticToken("AT", "ACCT")))
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("click submit"))
+
+	_, err := p.Step(context.Background(), conv)
+	if err == nil || !strings.Contains(err.Error(), "stream ended before completion") {
+		t.Errorf("err = %v, want \"stream ended before completion\" even with a complete function_call", err)
+	}
+}
+
+// TestStepStreamDecodeFailuresMentionedInError covers H4(c): per-event decode
+// failures are counted and surfaced when the stream also never completes.
+func TestStepStreamDecodeFailuresMentionedInError(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "data: {not valid json\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	p := codex.New(codex.WithBaseURL(srv.URL), codex.WithTokenSource(staticToken("AT", "ACCT")))
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("x"))
+
+	_, err := p.Step(context.Background(), conv)
+	if err == nil || !strings.Contains(err.Error(), "failed to decode") {
+		t.Errorf("err = %v, want a mention of the decode failure", err)
+	}
+}
+
+// TestStepStreamFailedIncludesErrorPayload covers H4(b): response.failed (and
+// response.error) must surface the decoded error payload, not a bare
+// "response failed" with no diagnostic content.
+func TestStepStreamFailedIncludesErrorPayload(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, sse(`{"type":"response.failed","error":{"code":"content_policy_violation","message":"blocked content"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := codex.New(codex.WithBaseURL(srv.URL), codex.WithTokenSource(staticToken("AT", "ACCT")))
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("x"))
+
+	_, err := p.Step(context.Background(), conv)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "content_policy_violation") || !strings.Contains(err.Error(), "blocked content") {
+		t.Errorf("err = %v, want the decoded error payload included", err)
+	}
+}
+
+// TestStepReasoningReplayedBeforeFunctionCall covers reasoning replay: a
+// reasoning output item must be captured and replayed (verbatim, via its
+// response.output_item.done payload) ahead of its sibling function_call in
+// the next request's input — the Responses backend (store:false) requires
+// this ordering when reasoning is configured.
+func TestStepReasoningReplayedBeforeFunctionCall(t *testing.T) {
+	t.Parallel()
+	const reasoningText = "thinking about the click"
+	firstTurn := sse(
+		`{"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning"}}`,
+		`{"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"`+reasoningText+`"}]}}`,
+		`{"type":"response.output_item.added","output_index":1,"item_id":"i1","item":{"type":"function_call","call_id":"call_1","name":"computer"}}`,
+		`{"type":"response.function_call_arguments.delta","item_id":"i1","delta":"{\"action\":\"click\",\"x\":10,\"y\":20}"}`,
+		`{"type":"response.output_item.done","output_index":1,"item_id":"i1","item":{"type":"function_call","call_id":"call_1"}}`,
+		completedUsage,
+	)
+	secondTurn := sse(`{"type":"response.output_text.delta","delta":"done"}`, completedUsage)
+
+	srv, bodies := sequentialServer(t, firstTurn, secondTurn)
+	p := codex.New(codex.WithBaseURL(srv.URL), codex.WithTokenSource(staticToken("AT", "ACCT")), codex.WithReasoningEffort("medium"))
+
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("click submit"))
+	turn1, err := p.Step(context.Background(), conv)
+	if err != nil {
+		t.Fatalf("step1: %v", err)
+	}
+	conv.Add(turn1.Message)
+	conv.AddTool(model.ActionResult(turn1.ActionUses()[0].CallID, action.Result{Output: "done"}))
+
+	if _, err := p.Step(context.Background(), conv); err != nil {
+		t.Fatalf("step2: %v", err)
+	}
+
+	body := (*bodies)[1]
+	reasoningIdx := strings.Index(body, reasoningText)
+	callIdx := strings.Index(body, `"call_1"`)
+	if reasoningIdx < 0 {
+		t.Fatalf("2nd request missing the replayed reasoning item:\n%s", body)
+	}
+	if callIdx < 0 {
+		t.Fatalf("2nd request missing the function_call:\n%s", body)
+	}
+	if reasoningIdx > callIdx {
+		t.Errorf("reasoning item (offset %d) must precede its function_call (offset %d) in replay:\n%s", reasoningIdx, callIdx, body)
+	}
+}
+
+// TestEncodeNewResyncsOnConversationReset covers the resync guard: a second,
+// unrelated (shorter) conversation driven through the same provider instance
+// — e.g. a second Run reusing it — must not resend the first conversation's
+// content or actions.
+func TestEncodeNewResyncsOnConversationReset(t *testing.T) {
+	t.Parallel()
+	srv, bodies := sequentialServer(t, toolCallSSE("i1", "call_1"), toolCallSSE("i2", "call_2"), toolCallSSE("i3", "call_3"))
+	p := codex.New(codex.WithBaseURL(srv.URL), codex.WithTokenSource(staticToken("AT", "ACCT")))
+
+	conv1 := &model.Conversation{}
+	conv1.AddUser(model.Text("first task"))
+	turn1, err := p.Step(context.Background(), conv1)
+	if err != nil {
+		t.Fatalf("step1: %v", err)
+	}
+	conv1.Add(turn1.Message)
+	conv1.AddTool(model.ActionResult(turn1.ActionUses()[0].CallID, action.Result{Output: "done"}))
+
+	if _, err := p.Step(context.Background(), conv1); err != nil {
+		t.Fatalf("step2: %v", err)
+	}
+
+	conv2 := &model.Conversation{}
+	conv2.AddUser(model.Text("second task"))
+	if _, err := p.Step(context.Background(), conv2); err != nil {
+		t.Fatalf("step3: %v", err)
+	}
+
+	body := (*bodies)[2]
+	for _, stale := range []string{"first task", "call_1", "call_2"} {
+		if strings.Contains(body, stale) {
+			t.Errorf("resync failed: 3rd request still contains stale content %q:\n%s", stale, body)
+		}
+	}
+	if !strings.Contains(body, "second task") {
+		t.Errorf("3rd request missing the new conversation's content:\n%s", body)
+	}
+}
+
+// TestResultTextIncludesCursorPosition covers cursor_position result
+// reporting: Result.Cursor must reach the model, since a cursor_position
+// action's only useful output is the coordinates.
+func TestResultTextIncludesCursorPosition(t *testing.T) {
+	t.Parallel()
+	srv, bodies := sequentialServer(t, toolCallSSE("i1", "call_1"), sse(completedUsage))
+	p := codex.New(codex.WithBaseURL(srv.URL), codex.WithTokenSource(staticToken("AT", "ACCT")))
+
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("where is the cursor"))
+	turn1, err := p.Step(context.Background(), conv)
+	if err != nil {
+		t.Fatalf("step1: %v", err)
+	}
+	conv.Add(turn1.Message)
+	conv.AddTool(model.ActionResult(turn1.ActionUses()[0].CallID, action.Result{Cursor: action.Point{X: 820, Y: 540}}))
+
+	if _, err := p.Step(context.Background(), conv); err != nil {
+		t.Fatalf("step2: %v", err)
+	}
+
+	body := (*bodies)[1]
+	if !strings.Contains(body, "820") || !strings.Contains(body, "540") {
+		t.Errorf("2nd request missing cursor coordinates:\n%s", body)
+	}
+}

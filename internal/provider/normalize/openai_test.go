@@ -99,3 +99,78 @@ func TestOpenAIScrollDefault(t *testing.T) {
 		t.Errorf("default scroll dy = %d, want 1", got.DY)
 	}
 }
+
+// TestOpenAIFloatCoordinatesRound covers H3: models routinely emit fractional
+// pixels ("x":820.5); those must round to the nearest int, not fail to
+// unmarshal (which would silently fall through to Repair()).
+func TestOpenAIFloatCoordinatesRound(t *testing.T) {
+	t.Parallel()
+	got, err := OpenAI([]byte(`{"action":"click","x":820.5,"y":400.2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Point != (action.Point{X: 821, Y: 400}) {
+		t.Errorf("point = %+v, want (821,400)", got.Point)
+	}
+}
+
+func TestOpenAIFloatCoordinatesRoundNegative(t *testing.T) {
+	t.Parallel()
+	got, err := OpenAI([]byte(`{"action":"click","x":-10.5,"y":-3.2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// math.Round rounds half away from zero: -10.5 -> -11.
+	if got.Point != (action.Point{X: -11, Y: -3}) {
+		t.Errorf("point = %+v, want (-11,-3)", got.Point)
+	}
+}
+
+func TestOpenAIFloatScrollDeltasRound(t *testing.T) {
+	t.Parallel()
+	got, err := OpenAI([]byte(`{"action":"scroll","x":5,"y":5,"dx":2.5,"dy":-1.5}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DX != 3 || got.DY != -2 {
+		t.Errorf("scroll delta = (%d,%d), want (3,-2)", got.DX, got.DY)
+	}
+}
+
+// TestOpenAIMissingCoordinateErrors covers the missing-coordinate guard: a
+// click/move-family action with no (or a partial) coordinate must error out
+// of OpenAI() rather than default to Point{0,0} — every adapter's caller
+// turns that error into Repair() (a safe screenshot no-op) instead of
+// clicking the macOS Apple-menu corner.
+func TestOpenAIMissingCoordinateErrors(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{
+		`{"action":"click"}`,
+		`{"action":"click","x":5}`,
+		`{"action":"double_click"}`,
+		`{"action":"triple_click"}`,
+		`{"action":"move"}`,
+		`{"action":"right_click"}`,
+		`{"action":"middle_click"}`,
+		`{"type":"click"}`,
+	} {
+		if _, err := OpenAI([]byte(raw)); err == nil {
+			t.Errorf("OpenAI(%s) = nil error, want missing-coordinate error", raw)
+		}
+	}
+}
+
+// TestOpenAIScrollToleratesMissingCoordinate confirms scroll is deliberately
+// NOT in the missing-coordinate guard (unlike click/move/drag): Validate only
+// requires a non-zero delta for Scroll, and models commonly scroll without
+// restating a coordinate.
+func TestOpenAIScrollToleratesMissingCoordinate(t *testing.T) {
+	t.Parallel()
+	got, err := OpenAI([]byte(`{"action":"scroll","dy":3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Point != (action.Point{}) || got.DY != 3 {
+		t.Errorf("got = %+v, want zero point / dy=3", got)
+	}
+}

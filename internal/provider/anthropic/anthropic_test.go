@@ -33,6 +33,27 @@ const endTurnResponse = `{
   "usage": {"input_tokens": 50, "output_tokens": 8}
 }`
 
+const pauseTurnResponse = `{
+  "id": "msg_pause", "type": "message", "role": "assistant", "model": "claude-opus-4-8",
+  "content": [{"type": "text", "text": "still working on it"}],
+  "stop_reason": "pause_turn",
+  "usage": {"input_tokens": 30, "output_tokens": 10}
+}`
+
+const refusalResponse = `{
+  "id": "msg_refusal", "type": "message", "role": "assistant", "model": "claude-opus-4-8",
+  "content": [],
+  "stop_reason": "refusal",
+  "usage": {"input_tokens": 20, "output_tokens": 0}
+}`
+
+const contextExceededResponse = `{
+  "id": "msg_ctx", "type": "message", "role": "assistant", "model": "claude-opus-4-8",
+  "content": [{"type": "text", "text": "ran out of context"}],
+  "stop_reason": "model_context_window_exceeded",
+  "usage": {"input_tokens": 200000, "output_tokens": 1}
+}`
+
 // captureServer returns responses in sequence and records each request body +
 // beta header.
 func captureServer(t *testing.T, responses ...string) (*httptest.Server, *[]string, *[]string) {
@@ -344,5 +365,164 @@ func TestImageRetentionZeroKeepsAll(t *testing.T) {
 	}
 	if pruned != 0 {
 		t.Errorf("pruned placeholders in 4th request = %d, want 0", pruned)
+	}
+}
+
+// TestStepPauseTurnResumesOnceThenSucceeds covers the documented pause_turn
+// recovery: a paused response is resent as-is (see BetaStopReasonPauseTurn),
+// and the caller sees only the final (resumed) turn, not the pause itself.
+func TestStepPauseTurnResumesOnceThenSucceeds(t *testing.T) {
+	t.Parallel()
+	srv, bodies, _ := captureServer(t, pauseTurnResponse, endTurnResponse)
+	p := newProvider(t, srv)
+
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("do a long task"))
+
+	turn, err := p.Step(context.Background(), conv)
+	if err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if turn.Stop != model.StopEnd {
+		t.Errorf("Stop = %s, want end", turn.Stop)
+	}
+	if turn.Text() != "the task is complete" {
+		t.Errorf("Text = %q, want the resumed turn's text", turn.Text())
+	}
+	if len(*bodies) != 2 {
+		t.Fatalf("requests = %d, want 2 (initial + one resume)", len(*bodies))
+	}
+	// The resume request must carry the paused turn's own content forward
+	// (resp.ToParam() appended to history before resending).
+	if !strings.Contains((*bodies)[1], "still working on it") {
+		t.Errorf("resume request missing the paused turn's content:\n%s", (*bodies)[1])
+	}
+}
+
+// TestStepPauseTurnGivesUpAfterOneRetry confirms a second consecutive pause
+// is not retried forever: exactly one resume attempt is made, and the
+// (still-paused) response is returned rather than looping.
+func TestStepPauseTurnGivesUpAfterOneRetry(t *testing.T) {
+	t.Parallel()
+	srv, bodies, _ := captureServer(t, pauseTurnResponse, pauseTurnResponse, pauseTurnResponse)
+	p := newProvider(t, srv)
+
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("do a long task"))
+
+	turn, err := p.Step(context.Background(), conv)
+	if err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if len(*bodies) != 2 {
+		t.Errorf("requests = %d, want exactly 2 (initial + one resume, no infinite retry)", len(*bodies))
+	}
+	if turn.HasActions() {
+		t.Error("a still-paused turn should not fabricate actions")
+	}
+}
+
+// TestStepRefusalReturnsError covers the refusal stop reason: it has no
+// legitimate Turn to build and must surface as an error, matching the SDK's
+// own tool runner treating a refusal-terminated message as dead (see
+// BetaStopReasonRefusal in betatoolrunner.go).
+func TestStepRefusalReturnsError(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := captureServer(t, refusalResponse)
+	p := newProvider(t, srv)
+
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("do something disallowed"))
+
+	_, err := p.Step(context.Background(), conv)
+	if err == nil || !strings.Contains(err.Error(), "model refused the request") {
+		t.Errorf("err = %v, want a refusal error", err)
+	}
+}
+
+// TestStepContextWindowExceededMapsToMaxTokens covers
+// model_context_window_exceeded: it means the response was cut short by a
+// length limit, same as max_tokens, and the model.StopReason seam has no
+// separate value for it.
+func TestStepContextWindowExceededMapsToMaxTokens(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := captureServer(t, contextExceededResponse)
+	p := newProvider(t, srv)
+
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("a huge task"))
+
+	turn, err := p.Step(context.Background(), conv)
+	if err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if turn.Stop != model.StopMaxTokens {
+		t.Errorf("Stop = %s, want max_tokens", turn.Stop)
+	}
+}
+
+// TestEncodeNewResyncsOnConversationReset covers the resync guard: a second,
+// unrelated (shorter) conversation driven through the same provider instance
+// — e.g. a second Run reusing it — must not resend the first conversation's
+// content or actions.
+func TestEncodeNewResyncsOnConversationReset(t *testing.T) {
+	t.Parallel()
+	srv, bodies, _ := captureServer(t, toolUseResp("toolu_1"), toolUseResp("toolu_2"), endTurnResponse)
+	p := newProvider(t, srv)
+
+	conv1 := &model.Conversation{}
+	conv1.AddUser(model.Text("first task"))
+	turn1, err := p.Step(context.Background(), conv1)
+	if err != nil {
+		t.Fatalf("step1: %v", err)
+	}
+	conv1.Add(turn1.Message)
+	conv1.AddTool(model.ActionResult(turn1.ActionUses()[0].CallID, action.Result{Output: "done"}))
+
+	if _, err := p.Step(context.Background(), conv1); err != nil {
+		t.Fatalf("step2: %v", err)
+	}
+
+	conv2 := &model.Conversation{}
+	conv2.AddUser(model.Text("second task"))
+	if _, err := p.Step(context.Background(), conv2); err != nil {
+		t.Fatalf("step3: %v", err)
+	}
+
+	body := (*bodies)[2]
+	for _, stale := range []string{"first task", "toolu_1", "toolu_2"} {
+		if strings.Contains(body, stale) {
+			t.Errorf("resync failed: 3rd request still contains stale content %q:\n%s", stale, body)
+		}
+	}
+	if !strings.Contains(body, "second task") {
+		t.Errorf("3rd request missing the new conversation's content:\n%s", body)
+	}
+}
+
+// TestResultTextIncludesCursorPosition covers cursor_position result
+// reporting: Result.Cursor must reach the model, since a cursor_position
+// action's only useful output is the coordinates.
+func TestResultTextIncludesCursorPosition(t *testing.T) {
+	t.Parallel()
+	srv, bodies, _ := captureServer(t, toolUseResp("toolu_1"), endTurnResponse)
+	p := newProvider(t, srv)
+
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("where is the cursor"))
+	turn1, err := p.Step(context.Background(), conv)
+	if err != nil {
+		t.Fatalf("step1: %v", err)
+	}
+	conv.Add(turn1.Message)
+	conv.AddTool(model.ActionResult(turn1.ActionUses()[0].CallID, action.Result{Cursor: action.Point{X: 820, Y: 540}}))
+
+	if _, err := p.Step(context.Background(), conv); err != nil {
+		t.Fatalf("step2: %v", err)
+	}
+
+	body := (*bodies)[1]
+	if !strings.Contains(body, "820") || !strings.Contains(body, "540") {
+		t.Errorf("2nd request missing cursor coordinates:\n%s", body)
 	}
 }

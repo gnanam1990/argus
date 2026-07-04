@@ -1,8 +1,10 @@
 package compat_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -272,5 +274,218 @@ func TestImageRetentionZeroKeepsAll(t *testing.T) {
 	}
 	if pruned != 0 {
 		t.Errorf("pruned placeholders in 4th request = %d, want 0", pruned)
+	}
+}
+
+// TestStepUsesMaxCompletionTokensForNewModels covers o-series/gpt-5.x: they
+// reject max_tokens outright, so the request must carry
+// max_completion_tokens instead.
+func TestStepUsesMaxCompletionTokensForNewModels(t *testing.T) {
+	t.Parallel()
+	srv, bodies := server(t, stopResponse)
+	p := compat.New(compat.WithBaseURL(srv.URL), compat.WithModel("gpt-5.5"))
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("x"))
+	if _, err := p.Step(context.Background(), conv); err != nil {
+		t.Fatal(err)
+	}
+	body := (*bodies)[0]
+	if !strings.Contains(body, `"max_completion_tokens"`) {
+		t.Errorf("body missing max_completion_tokens:\n%s", body)
+	}
+	if strings.Contains(body, `"max_tokens"`) {
+		t.Errorf("body must not send max_tokens for gpt-5.5:\n%s", body)
+	}
+}
+
+// TestStepUsesMaxTokensForOlderModels covers older/self-hosted servers (e.g.
+// Ollama) that expect max_tokens and don't understand max_completion_tokens.
+func TestStepUsesMaxTokensForOlderModels(t *testing.T) {
+	t.Parallel()
+	srv, bodies := server(t, stopResponse)
+	p := compat.New(compat.WithBaseURL(srv.URL), compat.WithModel("gpt-4o"))
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("x"))
+	if _, err := p.Step(context.Background(), conv); err != nil {
+		t.Fatal(err)
+	}
+	body := (*bodies)[0]
+	if !strings.Contains(body, `"max_tokens"`) {
+		t.Errorf("body missing max_tokens:\n%s", body)
+	}
+	if strings.Contains(body, `"max_completion_tokens"`) {
+		t.Errorf("body must not send max_completion_tokens for gpt-4o:\n%s", body)
+	}
+}
+
+const contentArrayResponse = `{
+  "choices": [{
+    "message": {
+      "role": "assistant",
+      "content": [{"type":"text","text":"click "},{"type":"text","text":"submit"}]
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+}`
+
+// TestStepContentArrayVariantExtractsText covers the array-of-parts content
+// shape some OpenAI-compatible servers emit instead of a plain string; it
+// previously failed the string type-assert and silently dropped all text.
+func TestStepContentArrayVariantExtractsText(t *testing.T) {
+	t.Parallel()
+	srv, _ := server(t, contentArrayResponse)
+	p := compat.New(compat.WithBaseURL(srv.URL))
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("x"))
+
+	turn, err := p.Step(context.Background(), conv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turn.Text() != "click submit" {
+		t.Errorf("Text() = %q, want %q", turn.Text(), "click submit")
+	}
+}
+
+// errReader always fails, simulating a connection that drops mid-body.
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, errors.New("boom") }
+
+// errTransport returns a 200 whose body errors on read, so post()'s
+// io.ReadAll has something to fail on without a real dropped connection.
+type errTransport struct{}
+
+func (errTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(errReader{}),
+		Header:     make(http.Header),
+	}, nil
+}
+
+// TestStepReadResponseBodyErrorIsSurfaced covers the body-read error path:
+// previously `raw, _ := io.ReadAll(...)` discarded the error and fed a
+// truncated/empty body into json.Unmarshal, producing a confusing decode
+// error instead of the real cause.
+func TestStepReadResponseBodyErrorIsSurfaced(t *testing.T) {
+	t.Parallel()
+	p := compat.New(compat.WithHTTPClient(&http.Client{Transport: errTransport{}}))
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("x"))
+
+	_, err := p.Step(context.Background(), conv)
+	if err == nil || !strings.Contains(err.Error(), "read response") {
+		t.Errorf("err = %v, want a wrapped \"read response\" error", err)
+	}
+}
+
+// TestStepCapsResponseBodyRead confirms an oversized response body (bigger
+// than the 16 MiB cap) is truncated rather than fully buffered — proven by
+// the resulting decode failure on this deliberately-truncated JSON, not a
+// hang or an out-of-memory read.
+func TestStepCapsResponseBodyRead(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"pad":"`))
+		_, _ = w.Write(bytes.Repeat([]byte("a"), 17<<20)) // > 16 MiB cap
+		// Deliberately never closes the JSON string/object.
+	}))
+	t.Cleanup(srv.Close)
+
+	p := compat.New(compat.WithBaseURL(srv.URL))
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("x"))
+	if _, err := p.Step(context.Background(), conv); err == nil {
+		t.Error("expected a decode error from the capped (truncated) body")
+	}
+}
+
+// TestStepAppliesTemperatureAndSeed covers StepConfig plumbing: Temperature
+// and Seed must reach the wire request when set.
+func TestStepAppliesTemperatureAndSeed(t *testing.T) {
+	t.Parallel()
+	srv, bodies := server(t, stopResponse)
+	p := compat.New(compat.WithBaseURL(srv.URL))
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("x"))
+
+	if _, err := p.Step(context.Background(), conv, model.WithTemperature(0.7), model.WithSeed(42)); err != nil {
+		t.Fatal(err)
+	}
+	body := (*bodies)[0]
+	if !strings.Contains(body, `"temperature":0.7`) {
+		t.Errorf("body missing temperature:\n%s", body)
+	}
+	if !strings.Contains(body, `"seed":42`) {
+		t.Errorf("body missing seed:\n%s", body)
+	}
+}
+
+// TestEncodeNewResyncsOnConversationReset covers the resync guard: a second,
+// unrelated (shorter) conversation driven through the same provider instance
+// — e.g. a second Run reusing it — must not resend the first conversation's
+// content or actions.
+func TestEncodeNewResyncsOnConversationReset(t *testing.T) {
+	t.Parallel()
+	srv, bodies := server(t, toolCallResponse, toolCallResponse, stopResponse)
+	p := compat.New(compat.WithBaseURL(srv.URL))
+
+	conv1 := &model.Conversation{}
+	conv1.AddUser(model.Text("first task"))
+	turn1, err := p.Step(context.Background(), conv1)
+	if err != nil {
+		t.Fatalf("step1: %v", err)
+	}
+	conv1.Add(turn1.Message)
+	conv1.AddTool(model.ActionResult(turn1.ActionUses()[0].CallID, action.Result{Output: "done"}))
+
+	if _, err := p.Step(context.Background(), conv1); err != nil {
+		t.Fatalf("step2: %v", err)
+	}
+
+	conv2 := &model.Conversation{}
+	conv2.AddUser(model.Text("second task"))
+	if _, err := p.Step(context.Background(), conv2); err != nil {
+		t.Fatalf("step3: %v", err)
+	}
+
+	body := (*bodies)[2]
+	for _, stale := range []string{"first task", "call_1"} {
+		if strings.Contains(body, stale) {
+			t.Errorf("resync failed: 3rd request still contains stale content %q:\n%s", stale, body)
+		}
+	}
+	if !strings.Contains(body, "second task") {
+		t.Errorf("3rd request missing the new conversation's content:\n%s", body)
+	}
+}
+
+// TestResultTextIncludesCursorPosition covers cursor_position result
+// reporting: Result.Cursor must reach the model, since a cursor_position
+// action's only useful output is the coordinates.
+func TestResultTextIncludesCursorPosition(t *testing.T) {
+	t.Parallel()
+	srv, bodies := server(t, toolCallResponse, stopResponse)
+	p := compat.New(compat.WithBaseURL(srv.URL))
+
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("where is the cursor"))
+	turn1, err := p.Step(context.Background(), conv)
+	if err != nil {
+		t.Fatalf("step1: %v", err)
+	}
+	conv.Add(turn1.Message)
+	conv.AddTool(model.ActionResult(turn1.ActionUses()[0].CallID, action.Result{Cursor: action.Point{X: 820, Y: 540}}))
+
+	if _, err := p.Step(context.Background(), conv); err != nil {
+		t.Fatalf("step2: %v", err)
+	}
+
+	body := (*bodies)[1]
+	if !strings.Contains(body, "820") || !strings.Contains(body, "540") {
+		t.Errorf("2nd request missing cursor coordinates:\n%s", body)
 	}
 }
