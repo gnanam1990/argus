@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"image/png"
+	"runtime"
 
 	"github.com/go-vgo/robotgo"
 
@@ -31,7 +32,7 @@ var _ computer.Computer = (*Driver)(nil)
 func (d *Driver) Screenshot(_ context.Context) (action.Image, error) {
 	img, err := robotgo.CaptureImg()
 	if err != nil {
-		return action.Image{}, fmt.Errorf("robotgo capture: %w", err)
+		return action.Image{}, captureError(err)
 	}
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
@@ -156,6 +157,18 @@ func (d *Driver) CursorPosition(_ context.Context) (int, int, error) {
 
 // Close is a no-op.
 func (d *Driver) Close() error { return nil }
+
+// captureError wraps a failed capture with an actionable hint. On macOS a
+// failure is almost always the Screen Recording permission (it blocks every
+// capture API, including Apple's screencapture), not a bug.
+func captureError(err error) error {
+	if runtime.GOOS == "darwin" {
+		return fmt.Errorf("robotgo capture failed (%w): grant Screen Recording to the "+
+			"terminal/app that launched argus (System Settings > Privacy & Security > "+
+			"Screen Recording), then fully quit and reopen it", err)
+	}
+	return fmt.Errorf("robotgo capture: %w", err)
+}
 
 func buttonName(b action.Button) string {
 	switch b {

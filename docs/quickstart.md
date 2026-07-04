@@ -68,18 +68,31 @@ make build-robotgo      # CGO_ENABLED=1 go build -tags robotgo
 ./bin/argus doctor      # → display server: native (robotgo/darwin)
 ```
 
-**macOS permissions are required at runtime:**
+**macOS permissions are required at runtime.** Run `argus doctor` — the robotgo
+build actually attempts a capture and tells you pass/fail:
 
-- **Screen Recording** — without it, screen capture fails with
-  `Capture image not found` and the agent can't see the screen.
+```
+  screen capture:  FAILED (robotgo capture failed (Capture image not found.): grant ...)
+```
+
+- **Screen Recording** — without it, capture fails with `Capture image not
+  found` and the agent can't see the screen. This is a hard macOS permission
+  gate: it blocks **every** capture API, including Apple's own `screencapture`
+  (which fails identically with `could not create image from display`). It is
+  not a bug and cannot be worked around in code.
 - **Accessibility** — required to synthesize mouse/keyboard input.
 
-Grant both under *System Settings → Privacy & Security* for the argus binary
-(or the terminal that launches it). For a distributable binary, sign with a
-Developer ID and notarize so the OS persists the grant. Mouse/keyboard and
-`GetScreenSize` work without any permission; only capture and input synthesis
-are gated. On multi-monitor setups the primary display defines the coordinate
-space.
+**How to grant it:** the permission attaches to the *responsible* app — when you
+run `argus` from a terminal, that's usually **the terminal app itself** (Ghostty,
+iTerm, Terminal, …), not the `argus` binary. In *System Settings → Privacy &
+Security → Screen Recording*, enable that app, then **fully quit and reopen it**
+(Screen Recording changes require the app to relaunch). Re-run `argus doctor` to
+confirm `screen capture: ok`.
+
+For a distributable binary, sign with a Developer ID and notarize so the OS
+persists the grant to the binary directly. Mouse/keyboard and `GetScreenSize`
+work without any permission; only capture and input synthesis are gated. On
+multi-monitor setups the primary display defines the coordinate space.
 
 ## Evaluate
 

@@ -89,10 +89,10 @@ jobs:
         with:
           go-version: stable
           cache: true
-      # The native driver is CGo + build-tagged; validate it compiles on a real
-      # macOS runner (it is excluded from the default CGO_ENABLED=0 matrix).
+      # The native driver + its CLI wiring are CGo + build-tagged; validate they
+      # compile on a real macOS runner (excluded from the default matrix).
       - name: go build -tags robotgo
-        run: CGO_ENABLED=1 go build -tags robotgo ./internal/driver/robotgo/
+        run: CGO_ENABLED=1 go build -tags robotgo ./internal/driver/robotgo/ ./cmd/argus/
 
   hygiene:
     name: Repo hygiene

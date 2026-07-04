@@ -215,6 +215,9 @@ func doctor(args []string, out io.Writer) error {
 	} else {
 		fmt.Fprintln(out, "  host control:   ok")
 	}
+	if capStatus := captureCheck(); capStatus != "" {
+		fmt.Fprintln(out, "  screen capture:", capStatus)
+	}
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintln(out, "  config:        ", err)
 	} else {
