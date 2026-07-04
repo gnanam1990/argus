@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gnanam1990/argus/internal/provider/normalize"
 	"github.com/gnanam1990/argus/pkg/action"
@@ -29,7 +30,6 @@ type Provider struct {
 	http      *http.Client
 	baseURL   string
 	modelID   string
-	maxTokens int
 	reasoning string
 	token     TokenSource
 	force     TokenSource // force-refresh on a hard 401 (optional)
@@ -47,9 +47,6 @@ func WithBaseURL(u string) Option { return func(p *Provider) { p.baseURL = u } }
 // WithModel sets the model ID.
 func WithModel(m string) Option { return func(p *Provider) { p.modelID = m } }
 
-// WithMaxTokens sets the output token cap.
-func WithMaxTokens(n int) Option { return func(p *Provider) { p.maxTokens = n } }
-
 // WithReasoningEffort sets the reasoning effort ("" omits it).
 func WithReasoningEffort(e string) Option { return func(p *Provider) { p.reasoning = e } }
 
@@ -64,7 +61,7 @@ func WithForceRefresh(fn TokenSource) Option { return func(p *Provider) { p.forc
 
 // New builds a Codex provider.
 func New(opts ...Option) *Provider {
-	p := &Provider{http: http.DefaultClient, baseURL: defaultBaseURL, modelID: "gpt-5.5", maxTokens: 4096}
+	p := &Provider{http: http.DefaultClient, baseURL: defaultBaseURL, modelID: "gpt-5.5"}
 	for _, o := range opts {
 		o(p)
 	}
@@ -86,20 +83,16 @@ func (p *Provider) Step(ctx context.Context, conv *model.Conversation, opts ...m
 
 	p.encodeNew(conv)
 
-	cfg := model.ApplyOptions(opts...)
-	maxTok := p.maxTokens
-	if cfg.MaxTokens > 0 {
-		maxTok = cfg.MaxTokens
-	}
-
+	// NOTE: the ChatGPT Codex backend rejects max_output_tokens
+	// ("Unsupported parameter"), unlike the API-key Responses endpoint, so the
+	// configured cap is intentionally not sent (StepOption MaxTokens included).
 	reqBody := responsesRequest{
-		Model:           p.modelID,
-		Instructions:    conv.System,
-		Input:           p.input,
-		Stream:          true,
-		Store:           false,
-		MaxOutputTokens: maxTok,
-		Tools:           []responsesTool{computerTool},
+		Model:        p.modelID,
+		Instructions: conv.System,
+		Input:        p.input,
+		Stream:       true,
+		Store:        false,
+		Tools:        []responsesTool{computerTool},
 	}
 	if p.reasoning != "" {
 		reqBody.Reasoning = &reasoningCfg{Effort: p.reasoning, Summary: "auto"}
@@ -148,6 +141,9 @@ func (p *Provider) send(ctx context.Context, body []byte, retried bool) (*model.
 		}
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		if msg := readErrorBody(res.Body); msg != "" {
+			return nil, nil, fmt.Errorf("codex api error (status %d): %s", res.StatusCode, msg)
+		}
 		return nil, nil, fmt.Errorf("codex api error (status %d)", res.StatusCode)
 	}
 	return decodeStream(res.Body)
@@ -205,6 +201,38 @@ func resultText(r action.Result) string {
 		return "terminated"
 	}
 	return "action completed; see attached screenshot"
+}
+
+// readErrorBody drains up to 2 KiB of an error response without risking a
+// hang: the backend can hold an SSE error connection open past the error
+// payload, so the read is abandoned after a short grace period and whatever
+// arrived is returned (the deferred Body.Close unblocks the goroutine).
+func readErrorBody(r io.Reader) string {
+	var mu sync.Mutex
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b := make([]byte, 512)
+		for buf.Len() < 2048 {
+			n, err := r.Read(b)
+			if n > 0 {
+				mu.Lock()
+				buf.Write(b[:n])
+				mu.Unlock()
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return strings.TrimSpace(buf.String())
 }
 
 // call accumulates a streamed function_call.

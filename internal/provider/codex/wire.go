@@ -4,15 +4,16 @@ import "encoding/json"
 
 // OpenAI Responses API wire types (the subset the Codex backend uses).
 
+// responsesRequest deliberately has no max_output_tokens: the ChatGPT Codex
+// backend rejects it as an unsupported parameter.
 type responsesRequest struct {
-	Model           string          `json:"model"`
-	Instructions    string          `json:"instructions,omitempty"`
-	Input           []any           `json:"input"`
-	Stream          bool            `json:"stream"`
-	Store           bool            `json:"store"`
-	MaxOutputTokens int             `json:"max_output_tokens,omitempty"`
-	Tools           []responsesTool `json:"tools,omitempty"`
-	Reasoning       *reasoningCfg   `json:"reasoning,omitempty"`
+	Model        string          `json:"model"`
+	Instructions string          `json:"instructions,omitempty"`
+	Input        []any           `json:"input"`
+	Stream       bool            `json:"stream"`
+	Store        bool            `json:"store"`
+	Tools        []responsesTool `json:"tools,omitempty"`
+	Reasoning    *reasoningCfg   `json:"reasoning,omitempty"`
 }
 
 type reasoningCfg struct {

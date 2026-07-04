@@ -80,7 +80,6 @@ func BuildProviderWithAuth(ctx context.Context, cfg config.Config, getenv func(s
 		}
 		opts := []codex.Option{
 			codex.WithModel(model),
-			codex.WithMaxTokens(cfg.Provider.MaxTokens),
 			codex.WithTokenSource(tokenFn),
 			codex.WithForceRefresh(forceFn),
 		}
