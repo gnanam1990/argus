@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/gnanam1990/argus/pkg/trajectory"
 )
 
 func TestRunDryRun(t *testing.T) {
@@ -27,9 +29,32 @@ func TestRunRequiresTask(t *testing.T) {
 
 func TestParseRun(t *testing.T) {
 	t.Parallel()
-	cfg, dry, task := parseRun([]string{"--config", "x.json", "--dry-run", "do", "it"})
-	if cfg != "x.json" || !dry || task != "do it" {
-		t.Errorf("parseRun = %q, %v, %q", cfg, dry, task)
+	cfg, traj, dry, task := parseRun([]string{"--config", "x.json", "--trajectory", "out/", "--dry-run", "do", "it"})
+	if cfg != "x.json" || traj != "out/" || !dry || task != "do it" {
+		t.Errorf("parseRun = %q, %q, %v, %q", cfg, traj, dry, task)
+	}
+}
+
+func TestBuildRecorder(t *testing.T) {
+	t.Parallel()
+	// No dir → no-op recorder.
+	rec, err := buildRecorder("", trajectory.NewManifest("t"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := rec.(trajectory.NoOp); !ok {
+		t.Errorf("empty dir should give NoOp, got %T", rec)
+	}
+	// A dir gives a disk recorder.
+	disk, err := buildRecorder(t.TempDir(), trajectory.NewManifest("t"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = disk.Close()
+
+	// Masking replaces secrets.
+	if got := maskFunc([]string{"sk-secret"})("key sk-secret end"); strings.Contains(got, "sk-secret") {
+		t.Error("maskFunc did not redact")
 	}
 }
 

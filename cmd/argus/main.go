@@ -14,9 +14,12 @@ import (
 
 	"github.com/gnanam1990/argus/internal/app"
 	"github.com/gnanam1990/argus/internal/config"
+	"github.com/gnanam1990/argus/internal/eval"
 	"github.com/gnanam1990/argus/internal/pricing"
 	"github.com/gnanam1990/argus/internal/version"
 	"github.com/gnanam1990/argus/pkg/action"
+	"github.com/gnanam1990/argus/pkg/agent"
+	"github.com/gnanam1990/argus/pkg/trajectory"
 )
 
 func main() {
@@ -42,13 +45,15 @@ func run(args []string, out io.Writer) error {
 		return doctor(args[1:], out)
 	case "run":
 		return runTask(args[1:], out)
+	case "eval":
+		return evalCmd(args[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q (run \"argus help\")", args[0])
 	}
 }
 
-// parseRun extracts --config, --dry-run, and the task from run's args.
-func parseRun(args []string) (configPath string, dryRun bool, task string) {
+// parseRun extracts --config, --trajectory, --dry-run, and the task.
+func parseRun(args []string) (configPath, trajDir string, dryRun bool, task string) {
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -57,17 +62,22 @@ func parseRun(args []string) (configPath string, dryRun bool, task string) {
 				i++
 				configPath = args[i]
 			}
+		case "--trajectory", "-t":
+			if i+1 < len(args) {
+				i++
+				trajDir = args[i]
+			}
 		case "--dry-run":
 			dryRun = true
 		default:
 			rest = append(rest, args[i])
 		}
 	}
-	return configPath, dryRun, strings.TrimSpace(strings.Join(rest, " "))
+	return configPath, trajDir, dryRun, strings.TrimSpace(strings.Join(rest, " "))
 }
 
 func runTask(args []string, out io.Writer) error {
-	configPath, dryRun, task := parseRun(args)
+	configPath, trajDir, dryRun, task := parseRun(args)
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -110,7 +120,14 @@ func runTask(args []string, out io.Writer) error {
 	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 	mw := app.BuildMiddleware(cfg, secrets, logger(), runID, stdinApprover{out: out})
 
-	r := app.NewRunner(cfg, prov, comp, gr, marker, trajectoryRecorder(), mw)
+	manifest := app.Manifest(cfg, task, version.Commit, time.Now().UTC().Format(time.RFC3339))
+	rec, err := buildRecorder(trajDir, manifest, maskFunc(secrets))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rec.Close() }()
+
+	r := app.NewRunner(cfg, prov, comp, gr, marker, rec, mw)
 	fmt.Fprintln(out, "running:", app.Summary(cfg))
 
 	outcome, err := r.Run(ctx, task)
@@ -127,8 +144,65 @@ func runTask(args []string, out io.Writer) error {
 	return nil
 }
 
+func evalCmd(args []string, out io.Writer) error {
+	var manifestPath, configPath string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--manifest", "-m":
+			if i+1 < len(args) {
+				i++
+				manifestPath = args[i]
+			}
+		case "--config", "-c":
+			if i+1 < len(args) {
+				i++
+				configPath = args[i]
+			}
+		}
+	}
+	if manifestPath == "" {
+		return fmt.Errorf("eval: --manifest FILE is required")
+	}
+	tasks, err := eval.LoadTasks(manifestPath)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	// Fail fast if the provider can't be constructed.
+	if _, err := app.BuildProvider(cfg, os.Getenv); err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	comp, cleanup, err := app.BuildComputer(ctx, cfg, os.Getenv)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = cleanup() }()
+	gr, marker := app.BuildGrounder(cfg)
+
+	factory := func(task eval.Task) agent.Session {
+		prov, _ := app.BuildProvider(cfg, os.Getenv)
+		mw := app.BuildMiddleware(cfg, nil, logger(), "eval-"+task.Name, nil)
+		return app.NewRunner(cfg, prov, comp, gr, marker, trajectory.NoOp{}, mw)
+	}
+
+	rep := eval.Run(ctx, tasks, factory, eval.Completed)
+	fmt.Fprintln(out, string(rep.JSON()))
+	fmt.Fprintf(out, "\n%d/%d passed\n", rep.Passed, rep.Total)
+	return nil
+}
+
 func doctor(args []string, out io.Writer) error {
-	configPath, _, _ := parseRun(args)
+	configPath, _, _, _ := parseRun(args)
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -172,10 +246,11 @@ func printUsage(out io.Writer) {
 	fmt.Fprint(out, `argus - a provider-agnostic computer-use agent
 
 Usage:
-  argus run [--config FILE] [--dry-run] "TASK"   Run a task
-  argus doctor [--config FILE]                    Diagnose the environment
-  argus version                                   Print version
-  argus help                                      Show this help
+  argus run [--config FILE] [--trajectory DIR] [--dry-run] "TASK"   Run a task
+  argus eval --manifest FILE [--config FILE]                        Evaluate tasks
+  argus doctor [--config FILE]                                      Diagnose the environment
+  argus version                                                     Print version
+  argus help                                                        Show this help
 
 Config is layered: defaults < JSON file (--config) < ARGUS_* env vars.
 Secrets (ANTHROPIC_API_KEY / OPENAI_API_KEY / ARGUS_API_KEY) come from the

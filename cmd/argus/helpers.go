@@ -3,6 +3,7 @@ package main
 import (
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/gnanam1990/argus/internal/platform"
 	"github.com/gnanam1990/argus/pkg/trajectory"
@@ -19,6 +20,22 @@ func logger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 }
 
-// trajectoryRecorder returns the run recorder. The disk recorder arrives with
-// the trajectory stage; for now runs are not persisted.
-func trajectoryRecorder() trajectory.Recorder { return trajectory.NoOp{} }
+// buildRecorder returns a disk recorder when dir is set, else a no-op recorder.
+func buildRecorder(dir string, m trajectory.Manifest, mask func(string) string) (trajectory.Recorder, error) {
+	if dir == "" {
+		return trajectory.NoOp{}, nil
+	}
+	return trajectory.NewDisk(dir, m, trajectory.WithMask(mask))
+}
+
+// maskFunc builds a redactor over the given secret values.
+func maskFunc(secrets []string) func(string) string {
+	return func(s string) string {
+		for _, secret := range secrets {
+			if secret != "" {
+				s = strings.ReplaceAll(s, secret, "«redacted»")
+			}
+		}
+		return s
+	}
+}
