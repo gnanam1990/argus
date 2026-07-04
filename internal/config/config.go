@@ -116,9 +116,9 @@ func applyEnv(c *Config, getenv func(string) string) {
 }
 
 var (
-	// Provider kinds: anthropic (native) plus OpenAI-compatible adapters —
-	// openai, kimi (Moonshot), xai (Grok), ollama (local), and bare compat.
-	providerKinds  = map[string]bool{"anthropic": true, "openai": true, "compat": true, "kimi": true, "xai": true, "ollama": true}
+	// Provider kinds: anthropic (native), the OpenAI-compatible adapters
+	// (openai, kimi, xai, ollama, compat), and chatgpt (OAuth Codex backend).
+	providerKinds  = map[string]bool{"anthropic": true, "openai": true, "compat": true, "kimi": true, "xai": true, "ollama": true, "chatgpt": true}
 	groundingModes = map[string]bool{"none": true, "omniparser": true, "ax": true, "chain": true}
 	sandboxKinds   = map[string]bool{"host": true, "docker": true}
 	gatedCaps      = map[string]bool{"run_command": true, "read_file": true, "write_file": true, "window_focus": true, "window_move": true}

@@ -17,7 +17,9 @@ import (
 	"github.com/gnanam1990/argus/internal/grounder/omniparser"
 	"github.com/gnanam1990/argus/internal/mark"
 	"github.com/gnanam1990/argus/internal/middleware"
+	"github.com/gnanam1990/argus/internal/oauth"
 	"github.com/gnanam1990/argus/internal/provider/anthropic"
+	"github.com/gnanam1990/argus/internal/provider/codex"
 	"github.com/gnanam1990/argus/internal/provider/compat"
 	"github.com/gnanam1990/argus/internal/sandbox/docker"
 	"github.com/gnanam1990/argus/internal/sandbox/host"
@@ -57,6 +59,68 @@ func APIKeyEnv(kind string) string {
 		return p.keyEnv
 	}
 	return "ARGUS_API_KEY"
+}
+
+// BuildProviderWithAuth constructs the model adapter, wiring the OAuth Manager
+// for subscription-login providers (chatgpt via the Codex backend, xai via an
+// OAuth Bearer over the compat adapter). API-key providers delegate to
+// BuildProvider. For xai OAuth, resolving the token may refresh (network);
+// chatgpt fetches its token lazily per request.
+func BuildProviderWithAuth(ctx context.Context, cfg config.Config, getenv func(string) string, mgr *oauth.Manager) (model.Provider, error) {
+	switch cfg.Provider.Kind {
+	case "chatgpt":
+		if mgr == nil {
+			return nil, fmt.Errorf("app: chatgpt requires an OAuth login (run: argus auth login chatgpt)")
+		}
+		tokenFn := chatgptTokenSource(mgr, false)
+		forceFn := chatgptTokenSource(mgr, true)
+		model := cfg.Provider.Model
+		if model == "" {
+			model = "gpt-5.5"
+		}
+		opts := []codex.Option{
+			codex.WithModel(model),
+			codex.WithMaxTokens(cfg.Provider.MaxTokens),
+			codex.WithTokenSource(tokenFn),
+			codex.WithForceRefresh(forceFn),
+		}
+		if cfg.Provider.BaseURL != "" {
+			opts = append(opts, codex.WithBaseURL(cfg.Provider.BaseURL))
+		}
+		return codex.New(opts...), nil
+
+	case "xai":
+		// Prefer an API key; fall back to an OAuth Bearer from the Manager.
+		if getenv("XAI_API_KEY") == "" && mgr != nil {
+			if tok, err := mgr.GetFresh(ctx, "xai"); err == nil {
+				return compat.New(compat.WithBaseURL("https://api.x.ai/v1"),
+					compat.WithAPIKey(tok), compat.WithModel(cfg.Provider.Model), compat.WithMaxTokens(cfg.Provider.MaxTokens)), nil
+			}
+		}
+	}
+	return BuildProvider(cfg, getenv)
+}
+
+// chatgptTokenSource adapts the Manager to a codex.TokenSource, deriving the
+// account id from the id_token when the stored token lacks it.
+func chatgptTokenSource(mgr *oauth.Manager, force bool) codex.TokenSource {
+	return func(ctx context.Context) (string, string, error) {
+		var tok oauth.Token
+		var err error
+		if force {
+			tok, err = mgr.ForceRefresh(ctx, "chatgpt")
+		} else {
+			tok, err = mgr.GetToken(ctx, "chatgpt")
+		}
+		if err != nil {
+			return "", "", err
+		}
+		acct := tok.Account
+		if acct == "" && tok.IDToken != "" {
+			acct, _ = codex.ExtractChatGPTAccountID(tok.IDToken)
+		}
+		return tok.AccessToken, acct, nil
+	}
 }
 
 // BuildProvider constructs the model adapter. Secrets come from getenv; no

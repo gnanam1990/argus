@@ -11,6 +11,7 @@ import (
 	"github.com/gnanam1990/argus/internal/grounder/ax"
 	"github.com/gnanam1990/argus/internal/grounder/chain"
 	"github.com/gnanam1990/argus/internal/middleware"
+	"github.com/gnanam1990/argus/internal/oauth"
 	"github.com/gnanam1990/argus/pkg/action"
 	compfake "github.com/gnanam1990/argus/pkg/computer/fake"
 	"github.com/gnanam1990/argus/pkg/model"
@@ -76,6 +77,44 @@ func TestCompatPresets(t *testing.T) {
 		if got := app.APIKeyEnv(kind); got != env {
 			t.Errorf("APIKeyEnv(%q) = %q, want %q", kind, got, env)
 		}
+	}
+}
+
+func TestBuildProviderWithAuth(t *testing.T) {
+	t.Parallel()
+	mgr := oauth.NewManager(oauth.NewStore(t.TempDir()))
+
+	// chatgpt requires the manager.
+	cg := config.Defaults()
+	cg.Provider.Kind = "chatgpt"
+	if _, err := app.BuildProviderWithAuth(context.Background(), cg, noEnv, nil); err == nil {
+		t.Error("chatgpt without a manager should error")
+	}
+	p, err := app.BuildProviderWithAuth(context.Background(), cg, noEnv, mgr)
+	if err != nil || p == nil {
+		t.Fatalf("chatgpt with manager: %v", err)
+	}
+	if p.Capabilities().NativeComputerUse {
+		t.Error("codex adapter should report emulated computer use")
+	}
+
+	// API-key kinds delegate to BuildProvider.
+	ak := config.Defaults() // anthropic
+	if _, err := app.BuildProviderWithAuth(context.Background(), ak, noEnv, mgr); err != nil {
+		t.Errorf("anthropic delegate: %v", err)
+	}
+
+	// xai with an API key set uses compat directly.
+	xk := config.Defaults()
+	xk.Provider.Kind = "xai"
+	env := func(k string) string {
+		if k == "XAI_API_KEY" {
+			return "sk-xai"
+		}
+		return ""
+	}
+	if _, err := app.BuildProviderWithAuth(context.Background(), xk, env, mgr); err != nil {
+		t.Errorf("xai with key: %v", err)
 	}
 }
 

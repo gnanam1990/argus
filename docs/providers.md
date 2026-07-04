@@ -13,6 +13,22 @@ the environment only.
 | `xai` | OpenAI-compatible | `XAI_API_KEY` | xAI Grok (`https://api.x.ai/v1`). OAuth-subscription auth is planned. |
 | `ollama` | OpenAI-compatible | `OLLAMA_API_KEY` (usually unset) | Local models (`http://localhost:11434/v1`). |
 | `compat` | OpenAI-compatible | `ARGUS_API_KEY` | Any other OpenAI-compatible endpoint/router. Requires `base_url`. |
+| `chatgpt` | ChatGPT Codex (Responses API) | OAuth (`argus auth login chatgpt`) | Subscription login via the Codex backend — see [oauth-subscriptions.md](oauth-subscriptions.md). |
+
+## Subscription OAuth (xai, chatgpt)
+
+`xai` and `chatgpt` can authenticate with an OAuth subscription login instead of
+an API key:
+
+```sh
+export ARGUS_OAUTH_ALLOW_PRESETS=1   # opt-in (see the ToS caveat)
+argus auth login chatgpt             # or: argus auth login xai
+argus run --config examples/config/chatgpt.json "..."
+```
+
+`xai` uses the OAuth token as a plain Bearer over the compat adapter; `chatgpt`
+uses a dedicated adapter against the Codex Responses backend. Details and the
+ToS caveat: [oauth-subscriptions.md](oauth-subscriptions.md).
 
 `kimi`, `xai`, `ollama` are convenience presets over the `compat` adapter — each
 just fills in a default `base_url` and key env (both overridable). Any other

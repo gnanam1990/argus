@@ -15,6 +15,7 @@ import (
 	"github.com/gnanam1990/argus/internal/app"
 	"github.com/gnanam1990/argus/internal/config"
 	"github.com/gnanam1990/argus/internal/eval"
+	"github.com/gnanam1990/argus/internal/oauth"
 	"github.com/gnanam1990/argus/internal/pricing"
 	"github.com/gnanam1990/argus/internal/version"
 	"github.com/gnanam1990/argus/pkg/action"
@@ -99,13 +100,15 @@ func runTask(args []string, out io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	prov, err := app.BuildProvider(cfg, os.Getenv)
+	mgr := oauth.NewManager(oauth.NewStore(""))
+	prov, err := app.BuildProviderWithAuth(ctx, cfg, os.Getenv, mgr)
 	if err != nil {
 		return err
 	}
 	key := os.Getenv(app.APIKeyEnv(cfg.Provider.Kind))
-	if key == "" {
-		fmt.Fprintf(out, "warning: %s is not set; provider calls will fail\n", app.APIKeyEnv(cfg.Provider.Kind))
+	if key == "" && cfg.Provider.Kind != "chatgpt" {
+		fmt.Fprintf(out, "warning: %s is not set (use an API key or 'argus auth login %s')\n",
+			app.APIKeyEnv(cfg.Provider.Kind), cfg.Provider.Kind)
 	}
 
 	comp, cleanup, err := app.BuildComputer(ctx, cfg, os.Getenv)
@@ -176,13 +179,14 @@ func evalCmd(args []string, out io.Writer) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	// Fail fast if the provider can't be constructed.
-	if _, err := app.BuildProvider(cfg, os.Getenv); err != nil {
-		return err
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+
+	mgr := oauth.NewManager(oauth.NewStore(""))
+	// Fail fast if the provider can't be constructed.
+	if _, err := app.BuildProviderWithAuth(ctx, cfg, os.Getenv, mgr); err != nil {
+		return err
+	}
 
 	comp, cleanup, err := app.BuildComputer(ctx, cfg, os.Getenv)
 	if err != nil {
@@ -192,7 +196,7 @@ func evalCmd(args []string, out io.Writer) error {
 	gr, marker := app.BuildGrounder(cfg)
 
 	factory := func(task eval.Task) agent.Session {
-		prov, _ := app.BuildProvider(cfg, os.Getenv)
+		prov, _ := app.BuildProviderWithAuth(ctx, cfg, os.Getenv, mgr)
 		mw := app.BuildMiddleware(cfg, nil, logger(), "eval-"+task.Name, nil)
 		return app.NewRunner(cfg, prov, comp, gr, marker, trajectory.NoOp{}, mw)
 	}
