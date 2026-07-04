@@ -47,6 +47,8 @@ func run(args []string, out io.Writer) error {
 		return runTask(args[1:], out)
 	case "eval":
 		return evalCmd(args[1:], out)
+	case "auth":
+		return authCmd(args[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q (run \"argus help\")", args[0])
 	}
@@ -251,6 +253,7 @@ func printUsage(out io.Writer) {
 Usage:
   argus run [--config FILE] [--trajectory DIR] [--dry-run] "TASK"   Run a task
   argus eval --manifest FILE [--config FILE]                        Evaluate tasks
+  argus auth login|status|logout <provider>                         OAuth logins (xai, chatgpt)
   argus doctor [--config FILE]                                      Diagnose the environment
   argus version                                                     Print version
   argus help                                                        Show this help

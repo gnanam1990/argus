@@ -20,6 +20,10 @@ id_rsa*
 credentials.json
 service-account*.json
 
+# OAuth token store artifacts — NEVER commit these
+*.token
+secret.key
+
 # Model weights / caches (never vendored)
 *.onnx
 *.pt
