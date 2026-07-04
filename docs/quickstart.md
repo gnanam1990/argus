@@ -52,11 +52,34 @@ and one PNG per observation, with secrets masked.
 | Host OS | Driver | Notes |
 |---|---|---|
 | Linux/X11 | `shell` (CGo-free) | Needs `xdotool` + a screenshot tool (`maim`) + `xrandr`. |
-| macOS/Windows | `robotgo` | Build with `-tags robotgo`; grant Screen Recording + Accessibility on macOS. |
+| macOS/Windows | `robotgo` | Build with `make build-robotgo` (see below). |
 | Any | container sandbox | A Linux desktop in Docker, driven over the transport. |
 
-Wayland host sessions are detected and reported rather than silently no-op'd —
-run against an Xvfb/X11 sandbox instead.
+The default `argus` binary uses the CGo-free X11 `shell` driver, which only
+works on Linux/X11. Wayland and headless hosts are detected and reported by
+`doctor` rather than silently no-op'd.
+
+### macOS / Windows
+
+The native backend is CGo + build-tagged, so build it explicitly:
+
+```sh
+make build-robotgo      # CGO_ENABLED=1 go build -tags robotgo
+./bin/argus doctor      # → display server: native (robotgo/darwin)
+```
+
+**macOS permissions are required at runtime:**
+
+- **Screen Recording** — without it, screen capture fails with
+  `Capture image not found` and the agent can't see the screen.
+- **Accessibility** — required to synthesize mouse/keyboard input.
+
+Grant both under *System Settings → Privacy & Security* for the argus binary
+(or the terminal that launches it). For a distributable binary, sign with a
+Developer ID and notarize so the OS persists the grant. Mouse/keyboard and
+`GetScreenSize` work without any permission; only capture and input synthesis
+are gated. On multi-monitor setups the primary display defines the coordinate
+space.
 
 ## Evaluate
 

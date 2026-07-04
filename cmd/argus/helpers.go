@@ -5,15 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gnanam1990/argus/internal/platform"
 	"github.com/gnanam1990/argus/pkg/trajectory"
 )
-
-// displayServer reports the host display server.
-func displayServer() string { return platform.DisplayServer() }
-
-// preflight validates the host can be driven.
-func preflight() error { return platform.Preflight(os.Getenv) }
 
 // logger returns the telemetry logger (stderr, structured).
 func logger() *slog.Logger {

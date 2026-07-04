@@ -9,12 +9,17 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/version.Commit=$(COMMIT) \
 	-X $(PKG)/internal/version.Date=$(DATE)
 
-.PHONY: all build test lint cover tidy fmt clean
+.PHONY: all build build-robotgo test lint cover tidy fmt clean
 
 all: lint test build
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/argus
+
+# macOS/Windows native backend (needs a C toolchain). On macOS, grant the
+# resulting binary Screen Recording + Accessibility permissions.
+build-robotgo:
+	CGO_ENABLED=1 go build -tags robotgo -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/argus
 
 test:
 	go test -race ./...
