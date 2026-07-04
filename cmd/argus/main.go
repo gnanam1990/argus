@@ -55,8 +55,8 @@ func run(args []string, out io.Writer) error {
 	}
 }
 
-// parseRun extracts --config, --trajectory, --dry-run, and the task.
-func parseRun(args []string) (configPath, trajDir string, dryRun bool, task string) {
+// parseRun extracts --config, --trajectory, --dry-run, --tui, and the task.
+func parseRun(args []string) (configPath, trajDir string, dryRun, tui bool, task string) {
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -72,15 +72,17 @@ func parseRun(args []string) (configPath, trajDir string, dryRun bool, task stri
 			}
 		case "--dry-run":
 			dryRun = true
+		case "--tui":
+			tui = true
 		default:
 			rest = append(rest, args[i])
 		}
 	}
-	return configPath, trajDir, dryRun, strings.TrimSpace(strings.Join(rest, " "))
+	return configPath, trajDir, dryRun, tui, strings.TrimSpace(strings.Join(rest, " "))
 }
 
 func runTask(args []string, out io.Writer) error {
-	configPath, trajDir, dryRun, task := parseRun(args)
+	configPath, trajDir, dryRun, tuiMode, task := parseRun(args)
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -123,7 +125,6 @@ func runTask(args []string, out io.Writer) error {
 		secrets = []string{key}
 	}
 	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
-	mw := app.BuildMiddleware(cfg, secrets, logger(), runID, stdinApprover{out: out})
 
 	manifest := app.Manifest(cfg, task, version.Commit, time.Now().UTC().Format(time.RFC3339))
 	rec, err := buildRecorder(trajDir, manifest, maskFunc(secrets))
@@ -132,6 +133,11 @@ func runTask(args []string, out io.Writer) error {
 	}
 	defer func() { _ = rec.Close() }()
 
+	if tuiMode {
+		return runTUI(ctx, cfg, prov, comp, gr, marker, rec, secrets, runID, task, out)
+	}
+
+	mw := app.BuildMiddleware(cfg, secrets, logger(), runID, stdinApprover{out: out})
 	r := app.NewRunner(cfg, prov, comp, gr, marker, rec, mw)
 	fmt.Fprintln(out, "running:", app.Summary(cfg))
 
@@ -208,7 +214,7 @@ func evalCmd(args []string, out io.Writer) error {
 }
 
 func doctor(args []string, out io.Writer) error {
-	configPath, _, _, _ := parseRun(args)
+	configPath, _, _, _, _ := parseRun(args)
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -255,7 +261,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprint(out, `argus - a provider-agnostic computer-use agent
 
 Usage:
-  argus run [--config FILE] [--trajectory DIR] [--dry-run] "TASK"   Run a task
+  argus run [--config FILE] [--trajectory DIR] [--dry-run] [--tui] "TASK"   Run a task
   argus eval --manifest FILE [--config FILE]                        Evaluate tasks
   argus auth login|status|logout <provider>                         OAuth logins (xai, chatgpt)
   argus doctor [--config FILE]                                      Diagnose the environment

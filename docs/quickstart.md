@@ -47,6 +47,25 @@ argus run --config examples/config/host-anthropic.json --trajectory ./runs/first
 The trajectory directory contains `manifest.json` (provenance), `steps.jsonl`,
 and one PNG per observation, with secrets masked.
 
+## Interactive view (`--tui`)
+
+Add `--tui` to watch the run in a live full-screen view: a header with the
+model, step, elapsed time, token count and estimated cost; a scrolling feed of
+the model's reasoning and each executed action; and inline `[y/N]` prompts for
+risky actions (when `require_approval` is on). Press `q` or `ctrl-c` to stop.
+
+```sh
+argus run --tui --config examples/config/host-anthropic.json "book a flight"
+```
+
+```
+╭─ argus · claude-opus-4-8 · step 4 · 00:38 · 1.2k tok · $0.01 ─╮
+│ ▸ clicking the Submit button                                 │
+│   ✓ click (820,540)                                          │
+│ ⚠ approve run_command "rm -rf build"?  [y/N]                 │
+╰──────────────────────────────────────────────────────────────╯
+```
+
 ## Platform support
 
 | Host OS | Driver | Notes |

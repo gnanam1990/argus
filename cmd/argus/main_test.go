@@ -29,9 +29,9 @@ func TestRunRequiresTask(t *testing.T) {
 
 func TestParseRun(t *testing.T) {
 	t.Parallel()
-	cfg, traj, dry, task := parseRun([]string{"--config", "x.json", "--trajectory", "out/", "--dry-run", "do", "it"})
-	if cfg != "x.json" || traj != "out/" || !dry || task != "do it" {
-		t.Errorf("parseRun = %q, %q, %v, %q", cfg, traj, dry, task)
+	cfg, traj, dry, tui, task := parseRun([]string{"--config", "x.json", "--trajectory", "out/", "--dry-run", "--tui", "do", "it"})
+	if cfg != "x.json" || traj != "out/" || !dry || !tui || task != "do it" {
+		t.Errorf("parseRun = %q, %q, %v, %v, %q", cfg, traj, dry, tui, task)
 	}
 }
 
