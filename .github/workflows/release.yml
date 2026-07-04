@@ -21,7 +21,7 @@ jobs:
       # Publishes CGo-free binaries (argus, argus-mcp, guestd) for linux/darwin/
       # windows with checksums and an SBOM. The native robotgo builds are made
       # on per-OS runners; no secret is baked into any artifact.
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
           args: release --clean
