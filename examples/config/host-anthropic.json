@@ -1,0 +1,18 @@
+{
+  "provider": {
+    "kind": "anthropic",
+    "model": "claude-opus-4-8",
+    "max_tokens": 4096,
+    "display_width": 1280,
+    "display_height": 800
+  },
+  "agent": {
+    "system": "You are a careful computer-use agent. Take a screenshot before acting.",
+    "max_steps": 40,
+    "retain_images": 3,
+    "budget_usd": 1.00,
+    "require_approval": true
+  },
+  "grounding": { "mode": "none" },
+  "sandbox": { "kind": "host" }
+}

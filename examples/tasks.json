@@ -1,0 +1,7 @@
+{
+  "tasks": [
+    { "name": "open-settings", "prompt": "Open the system settings application." },
+    { "name": "search-web", "prompt": "Open a browser and search for the weather in Chennai." },
+    { "name": "take-note", "prompt": "Open a text editor and write 'hello from argus', then save it." }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "provider": {
+    "kind": "compat",
+    "model": "qwen2.5-vl",
+    "base_url": "http://localhost:11434/v1",
+    "max_tokens": 2048
+  },
+  "agent": {
+    "max_steps": 30,
+    "retain_images": 2
+  },
+  "grounding": {
+    "mode": "chain",
+    "omniparser_url": "http://localhost:8000",
+    "min_confidence": 0.4
+  },
+  "sandbox": {
+    "kind": "docker",
+    "image": "argus-guest:latest",
+    "host_port": 7180,
+    "guest_port": 7180
+  }
+}

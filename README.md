@@ -63,6 +63,15 @@ make build
 More usage (running a task, configuring a provider, launching a sandbox) is
 documented as those stages land.
 
+## Documentation
+
+- [Quickstart](docs/quickstart.md) — install, `doctor`, run a task, evaluate
+- [Providers](docs/providers.md) — Anthropic / OpenAI-compatible / local, and grounding modes
+- [OmniParser grounding](docs/omniparser.md) — the vision service + AGPL caveat
+- [Threat model](docs/threat-model.md) — trust levels and safety controls
+- [API stability](docs/api-stability.md) — the `pkg/` contract vs `internal/`
+- [Roadmap](docs/ROADMAP.md) — the staged build plan
+
 ## Development
 
 ```sh
