@@ -12,6 +12,7 @@ type responsesRequest struct {
 	Input        []any           `json:"input"`
 	Stream       bool            `json:"stream"`
 	Store        bool            `json:"store"`
+	Include      []string        `json:"include,omitempty"`
 	Tools        []responsesTool `json:"tools,omitempty"`
 	Reasoning    *reasoningCfg   `json:"reasoning,omitempty"`
 }

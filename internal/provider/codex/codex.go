@@ -111,12 +111,17 @@ func (p *Provider) Step(ctx context.Context, conv *model.Conversation, opts ...m
 	// NOTE: the ChatGPT Codex backend rejects max_output_tokens
 	// ("Unsupported parameter"), unlike the API-key Responses endpoint, so the
 	// configured cap is intentionally not sent (StepOption MaxTokens included).
+	// include asks for reasoning items WITH their encrypted content: under
+	// store:false the backend persists nothing, so a replayed reasoning item
+	// is only valid when it carries encrypted_content — a bare rs_… id gets
+	// "Item ... not found".
 	reqBody := responsesRequest{
 		Model:        p.modelID,
 		Instructions: conv.System,
 		Input:        p.input,
 		Stream:       true,
 		Store:        false,
+		Include:      []string{"reasoning.encrypted_content"},
 		Tools:        []responsesTool{computerTool},
 	}
 	if p.reasoning != "" {
@@ -418,16 +423,20 @@ func decodeStream(r io.Reader) (*model.Turn, []any, error) {
 				c.args.WriteString(ev.Delta)
 			}
 		case "response.output_item.done":
-			// When reasoning is configured, the Responses backend
-			// (store:false) expects a reasoning item replayed verbatim
-			// alongside its sibling function_call/message in a later
-			// request's input. Capture its raw JSON as emitted rather than
-			// modeling its (large, backend-specific) shape.
+			// The Responses backend (store:false) expects a reasoning item
+			// replayed verbatim alongside its sibling function_call/message in
+			// a later request's input. Capture its raw JSON as emitted rather
+			// than modeling its (large, backend-specific) shape — but ONLY
+			// when it carries encrypted_content: without it the item is just a
+			// dangling rs_… reference the stateless backend rejects with
+			// "Item ... not found" on the next request.
 			if ev.Item.Type == "reasoning" {
 				if raw := doneItemJSON(payload); raw != nil {
-					var v any
+					var v map[string]any
 					if err := json.Unmarshal(raw, &v); err == nil {
-						reasoning = append(reasoning, replayItem{index: ev.OutputIndex, item: v})
+						if ec, ok := v["encrypted_content"].(string); ok && ec != "" {
+							reasoning = append(reasoning, replayItem{index: ev.OutputIndex, item: v})
+						}
 					}
 				}
 			}

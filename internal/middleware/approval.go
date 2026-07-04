@@ -10,10 +10,14 @@ import (
 // RiskPolicy decides whether an action must be approved before it runs.
 type RiskPolicy func(action.Action) bool
 
-// DefaultRiskPolicy requires approval for gated (system/window) actions and for
-// any action whose values derive from untrusted on-screen content.
+// DefaultRiskPolicy requires approval for gated (system/window) actions.
+// Untrusted alone is deliberately NOT enough: the runner conservatively marks
+// every post-observation action untrusted, so keying approval on it would
+// prompt for every click and screenshot. Untrusted feeds the InjectionGuard,
+// which flags/denies the sensitive (gated) subset; approval is the human gate
+// on those same gated capabilities.
 func DefaultRiskPolicy(a action.Action) bool {
-	return a.Type.Gated() || a.Untrusted
+	return a.Type.Gated()
 }
 
 // Approver decides whether a risky action may proceed. Return false to deny.

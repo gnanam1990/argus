@@ -413,16 +413,17 @@ func TestStepStreamFailedIncludesErrorPayload(t *testing.T) {
 }
 
 // TestStepReasoningReplayedBeforeFunctionCall covers reasoning replay: a
-// reasoning output item must be captured and replayed (verbatim, via its
-// response.output_item.done payload) ahead of its sibling function_call in
-// the next request's input — the Responses backend (store:false) requires
-// this ordering when reasoning is configured.
+// reasoning output item carrying encrypted_content must be captured and
+// replayed (verbatim, via its response.output_item.done payload) ahead of its
+// sibling function_call in the next request's input — the Responses backend
+// (store:false) requires this ordering, and only encrypted items are
+// replayable at all.
 func TestStepReasoningReplayedBeforeFunctionCall(t *testing.T) {
 	t.Parallel()
 	const reasoningText = "thinking about the click"
 	firstTurn := sse(
 		`{"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning"}}`,
-		`{"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"`+reasoningText+`"}]}}`,
+		`{"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","encrypted_content":"ENCRYPTED_BLOB","summary":[{"type":"summary_text","text":"`+reasoningText+`"}]}}`,
 		`{"type":"response.output_item.added","output_index":1,"item_id":"i1","item":{"type":"function_call","call_id":"call_1","name":"computer"}}`,
 		`{"type":"response.function_call_arguments.delta","item_id":"i1","delta":"{\"action\":\"click\",\"x\":10,\"y\":20}"}`,
 		`{"type":"response.output_item.done","output_index":1,"item_id":"i1","item":{"type":"function_call","call_id":"call_1"}}`,
@@ -446,6 +447,11 @@ func TestStepReasoningReplayedBeforeFunctionCall(t *testing.T) {
 		t.Fatalf("step2: %v", err)
 	}
 
+	// Every request must ask for encrypted reasoning content.
+	if !strings.Contains((*bodies)[0], `"reasoning.encrypted_content"`) {
+		t.Errorf("request must include reasoning.encrypted_content:\n%s", (*bodies)[0])
+	}
+
 	body := (*bodies)[1]
 	reasoningIdx := strings.Index(body, reasoningText)
 	callIdx := strings.Index(body, `"call_1"`)
@@ -457,6 +463,42 @@ func TestStepReasoningReplayedBeforeFunctionCall(t *testing.T) {
 	}
 	if reasoningIdx > callIdx {
 		t.Errorf("reasoning item (offset %d) must precede its function_call (offset %d) in replay:\n%s", reasoningIdx, callIdx, body)
+	}
+}
+
+// A reasoning item WITHOUT encrypted_content must not be replayed: under
+// store:false the backend persists nothing, so replaying the bare rs_… id is
+// rejected with "Item ... not found" (observed live). Dropping it keeps the
+// run alive.
+func TestStepReasoningWithoutEncryptedContentNotReplayed(t *testing.T) {
+	t.Parallel()
+	firstTurn := sse(
+		`{"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning"}}`,
+		`{"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[]}}`,
+		`{"type":"response.output_item.added","output_index":1,"item_id":"i1","item":{"type":"function_call","call_id":"call_1","name":"computer"}}`,
+		`{"type":"response.function_call_arguments.delta","item_id":"i1","delta":"{\"action\":\"click\",\"x\":10,\"y\":20}"}`,
+		`{"type":"response.output_item.done","output_index":1,"item_id":"i1","item":{"type":"function_call","call_id":"call_1"}}`,
+		completedUsage,
+	)
+	secondTurn := sse(`{"type":"response.output_text.delta","delta":"done"}`, completedUsage)
+
+	srv, bodies := sequentialServer(t, firstTurn, secondTurn)
+	p := codex.New(codex.WithBaseURL(srv.URL), codex.WithTokenSource(staticToken("AT", "ACCT")))
+
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("click submit"))
+	turn1, err := p.Step(context.Background(), conv)
+	if err != nil {
+		t.Fatalf("step1: %v", err)
+	}
+	conv.Add(turn1.Message)
+	conv.AddTool(model.ActionResult(turn1.ActionUses()[0].CallID, action.Result{Output: "done"}))
+	if _, err := p.Step(context.Background(), conv); err != nil {
+		t.Fatalf("step2: %v", err)
+	}
+
+	if strings.Contains((*bodies)[1], `"rs_1"`) {
+		t.Errorf("un-encrypted reasoning item must not be replayed:\n%s", (*bodies)[1])
 	}
 }
 

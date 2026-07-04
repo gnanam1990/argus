@@ -70,8 +70,12 @@ func TestDefaultRiskPolicy(t *testing.T) {
 	if !DefaultRiskPolicy(action.Action{Type: action.RunCommand, Text: "ls"}) {
 		t.Error("gated action should need approval")
 	}
-	if !DefaultRiskPolicy(action.Action{Type: action.Click, Untrusted: true}) {
-		t.Error("untrusted action should need approval")
+	// Untrusted alone must NOT trigger approval: the runner marks every
+	// post-observation action untrusted, and prompting per click/screenshot
+	// would make approval unusable. The injection guard handles
+	// untrusted+sensitive.
+	if DefaultRiskPolicy(action.Action{Type: action.Click, Untrusted: true}) {
+		t.Error("untrusted non-gated action should not need approval")
 	}
 	if DefaultRiskPolicy(action.Action{Type: action.Click, Button: action.Left}) {
 		t.Error("plain click should not need approval")
