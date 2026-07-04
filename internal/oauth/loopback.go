@@ -48,6 +48,22 @@ func (l *LoopbackListener) RedirectURI() string {
 	return "http://" + l.listener.Addr().String() + l.path
 }
 
+// Port returns the actual bound loopback port.
+func (l *LoopbackListener) Port() int {
+	return l.listener.Addr().(*net.TCPAddr).Port
+}
+
+// RedirectURIForHost is RedirectURI but with an explicit hostname, for providers
+// that registered "localhost" rather than "127.0.0.1" (the two are not
+// interchangeable under OAuth's exact-match redirect rule). An empty host falls
+// back to the listener's own address.
+func (l *LoopbackListener) RedirectURIForHost(host string) string {
+	if host == "" {
+		return l.RedirectURI()
+	}
+	return fmt.Sprintf("http://%s:%d%s", host, l.Port(), l.path)
+}
+
 func (l *LoopbackListener) handle(w http.ResponseWriter, r *http.Request) {
 	// Only the callback path carries the result; ignore favicon etc.
 	if r.URL.Path != l.path && r.URL.Path != "/callback" && r.URL.Path != "/auth/callback" {

@@ -65,6 +65,10 @@ type Config struct {
 	ExtraAuthParams             map[string]string
 	RedirectPort                int    // 0 = ephemeral
 	RedirectPath                string // default "/callback"
+	// RedirectHost is the hostname advertised in the redirect_uri. It must match
+	// exactly what the provider registered for the client (some register
+	// "localhost", not "127.0.0.1"). Empty means use the listener's own address.
+	RedirectHost string
 }
 
 // Sentinel errors.

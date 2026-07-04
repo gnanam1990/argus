@@ -5,6 +5,6 @@
     "max_tokens": 4096
   },
   "agent": { "max_steps": 30, "retain_images": 2 },
-  "grounding": { "mode": "ax" },
+  "grounding": { "mode": "none" },
   "sandbox": { "kind": "host" }
 }

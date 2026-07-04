@@ -59,15 +59,50 @@ current Claude models). Native computer use consumes raw screenshots, so
 ```
 
 These use an emulated `computer` function tool. Because they have no first-class
-computer tool, pair them with a set-of-marks grounder (`grounding.mode` =
-`ax`, `omniparser`, or `chain`) so the model picks numbered marks instead of raw
-pixels.
+computer tool, either run a **vision model** and let it pick pixel coordinates
+from the screenshot (`grounding.mode: none`), or pair a text model with a
+set-of-marks grounder (`omniparser` / `chain`) so it picks numbered marks.
+
+## Ollama (local, no API key)
+
+Ollama exposes an OpenAI-compatible API at `http://localhost:11434/v1`, so it
+works through the `ollama` preset with no key. Use a **vision** model — computer
+use needs the model to see the screen.
+
+```sh
+# 1. Install and start the server (https://ollama.com/download)
+ollama serve                     # or the menubar app on macOS
+
+# 2. Pull a vision-capable model
+ollama pull qwen2.5vl            # or: llama3.2-vision, minicpm-v
+
+# 3. Point argus at it (no key needed)
+argus run --tui --config examples/config/ollama.json "open Notes and type hello"
+```
+
+`examples/config/ollama.json` uses `model: qwen2.5vl`, `base_url:
+http://localhost:11434/v1`, and `grounding.mode: none` (the model reads the raw
+screenshot and emits coordinates). To use a different local model, edit `model`;
+to reach Ollama on another host/port, set `base_url` in the config or the
+`ARGUS_BASE_URL` env var. `OLLAMA_API_KEY` is normally unset; Ollama ignores the
+bearer token.
+
+> Local vision models are smaller than frontier models — expect to raise
+> `agent.max_steps` and to babysit early runs. For the most reliable control on
+> macOS, the Anthropic native computer-use provider is still the strongest.
 
 ## Choosing a grounding mode
 
 | Mode | Detector | When |
 |---|---|---|
-| `none` | — | Native computer-use providers (Anthropic). |
-| `ax` | accessibility tree | Fast, exact, free; native apps. |
+| `none` | — | Native computer-use providers (Anthropic), **and vision models** (e.g. `qwen2.5vl` on Ollama) that read the screenshot and emit pixel coordinates directly. |
+| `ax` | accessibility tree | Fast, exact, free; native apps. Needs an accessibility backend — see the note below. |
 | `omniparser` | vision service (GPU) | Canvas/WebGL/Electron surfaces. AGPL weights — see `omniparser.md`. |
-| `chain` | ax → vision fallback | Recommended default for emulated providers. |
+| `chain` | ax → vision fallback | Best for emulated providers once a backend is wired. |
+
+> **`ax` availability.** The accessibility-tree detector ships with the seam but
+> no host backend yet, so on macOS/Windows/Linux it reports *unavailable* and the
+> run aborts on the first observation. Until an AT-SPI/AXUIElement source lands,
+> use `none` (vision models, which pick coordinates from the raw screenshot) or
+> `omniparser`/`chain` (with the vision service running). This is why the
+> emulated-provider examples ship with `grounding.mode: none`.

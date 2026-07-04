@@ -20,10 +20,13 @@ var basePresets = map[string]Config{
 		AuthorizationEndpoint: "https://auth.openai.com/oauth/authorize",
 		TokenEndpoint:         "https://auth.openai.com/oauth/token",
 		IssuerURL:             "https://auth.openai.com",
-		Scopes:                []string{"openid", "profile", "email", "offline_access", "api.connectors.read", "api.connectors.invoke"},
+		Scopes:                []string{"openid", "profile", "email", "offline_access"},
 		RedirectPort:          1455,
 		RedirectPath:          "/auth/callback",
-		ExtraAuthParams:       map[string]string{"id_token_add_organizations": "true", "codex_cli_simplified_flow": "true"},
+		// The Codex client registers "localhost" (not 127.0.0.1); the redirect_uri
+		// must match that exactly or the authorize request is rejected.
+		RedirectHost:    "localhost",
+		ExtraAuthParams: map[string]string{"id_token_add_organizations": "true", "codex_cli_simplified_flow": "true"},
 	},
 	// xAI (Grok) — public Grok CLI client; standard OpenAI-compatible API, so
 	// the token is used as a plain Bearer against api.x.ai (no special adapter).
@@ -59,6 +62,7 @@ func applyPresetEnv(cfg *Config, up string, getenv func(string) string) {
 	set("AUTH_URL", &cfg.AuthorizationEndpoint)
 	set("TOKEN_URL", &cfg.TokenEndpoint)
 	set("DEVICE_URL", &cfg.DeviceAuthorizationEndpoint)
+	set("REDIRECT_HOST", &cfg.RedirectHost)
 	if v := getenv("ARGUS_OAUTH_" + up + "_SCOPES"); v != "" {
 		cfg.Scopes = strings.Fields(v)
 	}

@@ -102,7 +102,10 @@ func loginLoopback(ctx context.Context, out io.Writer, cfg oauth.Config, noBrows
 	}
 	defer l.Close()
 
-	authURL, err := oauth.BuildAuthorizationURL(cfg, l.RedirectURI(), state, pkce)
+	// The redirect_uri must be byte-identical in the authorize request and the
+	// code exchange, and must match the host the provider registered.
+	redirectURI := l.RedirectURIForHost(cfg.RedirectHost)
+	authURL, err := oauth.BuildAuthorizationURL(cfg, redirectURI, state, pkce)
 	if err != nil {
 		return oauth.Token{}, err
 	}
@@ -118,7 +121,7 @@ func loginLoopback(ctx context.Context, out io.Writer, cfg oauth.Config, noBrows
 	if err != nil {
 		return oauth.Token{}, err
 	}
-	return oauth.ExchangeCode(ctx, nil, cfg, code, l.RedirectURI(), pkce.Verifier, nil)
+	return oauth.ExchangeCode(ctx, nil, cfg, code, redirectURI, pkce.Verifier, nil)
 }
 
 func loginDevice(ctx context.Context, out io.Writer, cfg oauth.Config) (oauth.Token, error) {

@@ -29,8 +29,26 @@ func TestPresetChatGPT(t *testing.T) {
 	if cfg.RedirectPort != 1455 || cfg.RedirectPath != "/auth/callback" {
 		t.Errorf("redirect = %d %q", cfg.RedirectPort, cfg.RedirectPath)
 	}
+	// The Codex client registers "localhost"; sending 127.0.0.1 is rejected by
+	// the authorize endpoint (authorize_hydra_invalid_request).
+	if cfg.RedirectHost != "localhost" {
+		t.Errorf("redirect host = %q, want localhost", cfg.RedirectHost)
+	}
 	if cfg.ExtraAuthParams["id_token_add_organizations"] != "true" {
 		t.Errorf("extra params = %v", cfg.ExtraAuthParams)
+	}
+}
+
+func TestPresetChatGPTRedirectHostOverride(t *testing.T) {
+	t.Parallel()
+	cfg, _ := Preset("chatgpt", func(k string) string {
+		if k == "ARGUS_OAUTH_CHATGPT_REDIRECT_HOST" {
+			return "127.0.0.1"
+		}
+		return ""
+	})
+	if cfg.RedirectHost != "127.0.0.1" {
+		t.Errorf("redirect host override = %q", cfg.RedirectHost)
 	}
 }
 
