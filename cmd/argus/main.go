@@ -112,6 +112,11 @@ func runTask(args []string, out io.Writer) error {
 		fmt.Fprintf(out, "warning: %s is not set (use an API key or 'argus auth login %s')\n",
 			app.APIKeyEnv(cfg.Provider.Kind), cfg.Provider.Kind)
 	}
+	if cfg.Sandbox.Kind == "host" {
+		if perr := preflight(); perr != nil {
+			fmt.Fprintln(out, "warning:", perr)
+		}
+	}
 
 	comp, cleanup, err := app.BuildComputer(ctx, cfg, os.Getenv)
 	if err != nil {
@@ -120,10 +125,7 @@ func runTask(args []string, out io.Writer) error {
 	defer func() { _ = cleanup() }()
 
 	gr, marker := app.BuildGrounder(cfg)
-	var secrets []string
-	if key != "" {
-		secrets = []string{key}
-	}
+	secrets := gatherSecrets(key, os.Getenv)
 	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 
 	manifest := app.Manifest(cfg, task, version.Commit, time.Now().UTC().Format(time.RFC3339))
@@ -145,9 +147,10 @@ func runTask(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	mask := maskFunc(secrets)
 	fmt.Fprintf(out, "\noutcome: %s in %d steps\n", outcome.Reason, outcome.Steps)
 	if outcome.FinalText != "" {
-		fmt.Fprintln(out, outcome.FinalText)
+		fmt.Fprintln(out, mask(outcome.FinalText))
 	}
 	if cost, ok := pricing.Cost(cfg.Provider.Model, outcome.Usage); ok {
 		fmt.Fprintf(out, "cost: $%.4f (in %d / out %d tokens)\n", cost, outcome.Usage.InputTokens, outcome.Usage.OutputTokens)
@@ -201,10 +204,15 @@ func evalCmd(args []string, out io.Writer) error {
 	defer func() { _ = cleanup() }()
 	gr, marker := app.BuildGrounder(cfg)
 
-	factory := func(task eval.Task) agent.Session {
-		prov, _ := app.BuildProviderWithAuth(ctx, cfg, os.Getenv, mgr)
+	factory := func(task eval.Task) (agent.Session, error) {
+		prov, perr := app.BuildProviderWithAuth(ctx, cfg, os.Getenv, mgr)
+		if perr != nil {
+			return nil, perr
+		}
+		// nil approver: with require_approval set, the gate fails closed —
+		// unattended evals deny risky actions instead of skipping the gate.
 		mw := app.BuildMiddleware(cfg, nil, logger(), "eval-"+task.Name, nil)
-		return app.NewRunner(cfg, prov, comp, gr, marker, trajectory.NoOp{}, mw)
+		return app.NewRunner(cfg, prov, comp, gr, marker, trajectory.NoOp{}, mw), nil
 	}
 
 	rep := eval.Run(ctx, tasks, factory, eval.Completed)

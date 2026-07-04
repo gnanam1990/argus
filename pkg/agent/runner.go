@@ -90,7 +90,7 @@ func NewRunner(provider model.Provider, comp computer.Computer, opts ...Option) 
 type defaultMarker struct{}
 
 func (defaultMarker) Overlay(img action.Image, els []grounder.Element) (action.Image, map[int]action.Rect, error) {
-	return img, grounder.Index(els), nil
+	return img, grounder.Index(grounder.Renumber(els)), nil
 }
 
 // History returns the conversation from the most recent Run.
@@ -185,6 +185,9 @@ func (r *Runner) Run(ctx context.Context, task string) (*Outcome, error) {
 
 		if !turn.HasActions() {
 			out.Reason = ReasonCompleted
+			// The completing turn IS the final word, even when empty — never
+			// leave a stale earlier step's text as FinalText.
+			out.FinalText = turn.Text()
 			if err := r.recorder.Append(step); err != nil {
 				return fail(err)
 			}

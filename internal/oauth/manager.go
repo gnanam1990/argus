@@ -58,11 +58,27 @@ func NewManager(store *Store, opts ...ManagerOption) *Manager {
 	return m
 }
 
-// Login persists a token for provider name.
-func (m *Manager) Login(name string, t Token) error { return m.store.Save(ProviderKey(name), t) }
+// Login persists a token for provider name. It takes the same per-key lock as
+// refreshAndSave so a fresh login can't interleave with (be clobbered by, or
+// clobber) an in-flight refresh for the same provider.
+func (m *Manager) Login(name string, t Token) error {
+	key := ProviderKey(name)
+	lock := m.keyLock(key)
+	lock.Lock()
+	defer lock.Unlock()
+	return m.store.Save(key, t)
+}
 
-// Logout removes the stored token for provider name.
-func (m *Manager) Logout(name string) error { return m.store.Delete(ProviderKey(name)) }
+// Logout removes the stored token for provider name. It takes the same
+// per-key lock as refreshAndSave so a concurrent in-flight refresh can't
+// resurrect the token this call is deleting.
+func (m *Manager) Logout(name string) error {
+	key := ProviderKey(name)
+	lock := m.keyLock(key)
+	lock.Lock()
+	defer lock.Unlock()
+	return m.store.Delete(key)
+}
 
 // GetToken returns a valid (refreshed-if-needed) token for provider name.
 func (m *Manager) GetToken(ctx context.Context, name string) (Token, error) {
@@ -104,8 +120,11 @@ func (m *Manager) refreshAndSave(ctx context.Context, name, key string, current 
 	lock.Lock()
 	defer lock.Unlock()
 
-	// Double-check: another goroutine may have refreshed while we waited.
-	if reloaded, err := m.store.Load(key); err == nil {
+	// Double-check: another goroutine may have refreshed — or logged out —
+	// while we waited for the lock.
+	reloaded, loadErr := m.store.Load(key)
+	switch {
+	case loadErr == nil:
 		if reloaded.AccessToken != current.AccessToken {
 			return reloaded, nil
 		}
@@ -113,6 +132,10 @@ func (m *Manager) refreshAndSave(ctx context.Context, name, key string, current 
 			return reloaded, nil
 		}
 		current = reloaded
+	case os.IsNotExist(loadErr):
+		// Logged out while we waited for the lock: never resurrect a deleted
+		// token by writing a freshly refreshed one back.
+		return Token{}, fmt.Errorf("oauth: not logged in to %q (run: argus auth login %s)", name, name)
 	}
 
 	cfg, ok := m.resolve(name)
@@ -121,7 +144,7 @@ func (m *Manager) refreshAndSave(ctx context.Context, name, key string, current 
 	}
 	refreshed, err := Refresh(ctx, m.client, cfg, current, m.now)
 	if err != nil {
-		return Token{}, err
+		return Token{}, fmt.Errorf("oauth: refresh %s failed: %w (run \"argus auth login %s\" to re-authenticate)", name, err, name)
 	}
 	// Carry non-refreshable fields the token endpoint doesn't return.
 	if refreshed.Account == "" {

@@ -52,3 +52,22 @@ func TestValidateDisplayAndSteps(t *testing.T) {
 		t.Error("negative max_steps should be rejected")
 	}
 }
+
+// A USD budget on a model with no pinned rate enforces nothing — reject it up
+// front instead of silently running uncapped.
+func TestValidateBudgetUSDNeedsPricing(t *testing.T) {
+	t.Parallel()
+	c := Defaults()
+	c.Provider.Kind = "ollama"
+	c.Provider.Model = "qwen2.5vl" // not in the pinned rates table
+	c.Agent.BudgetUSD = 5
+	if err := c.Validate(); err == nil {
+		t.Error("budget_usd with unpriced model should be rejected")
+	}
+
+	c.Agent.BudgetUSD = 0
+	c.Agent.BudgetTokens = 100000
+	if err := c.Validate(); err != nil {
+		t.Errorf("token budget must stay valid for unpriced models: %v", err)
+	}
+}

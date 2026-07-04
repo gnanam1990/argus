@@ -8,10 +8,14 @@ import (
 	"github.com/gnanam1990/argus/pkg/model"
 )
 
-// Redaction masks known secret values in the conversation's text content before
-// each provider call, so a secret that appeared on screen or in a tool result
-// is never sent to the model or captured in a recorded trajectory. It does not
-// touch action-use content (the model's intended keystrokes).
+// Redaction masks known secret values in the conversation's TEXT content before
+// each provider call: model-visible text and tool-result output never carry a
+// registered secret, and the trajectory recorder masks the same values at
+// persist time. Scope, honestly stated: this cannot redact pixels — a secret
+// visible INSIDE a screenshot still reaches the vision model and the recorded
+// PNGs. Keep secret-bearing windows off-screen while an agent drives, and
+// register extra values via ARGUS_SECRETS. It does not touch action-use content
+// (the model's intended keystrokes).
 type Redaction struct {
 	agent.Base
 	secrets []string

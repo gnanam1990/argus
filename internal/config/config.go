@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/gnanam1990/argus/internal/pricing"
 	"github.com/gnanam1990/argus/pkg/action"
 )
 
@@ -127,8 +128,9 @@ func applyEnv(c *Config, getenv func(string) string) error {
 
 var (
 	// Provider kinds: anthropic (native), the OpenAI-compatible adapters
-	// (openai, kimi, xai, ollama, compat), and chatgpt (OAuth Codex backend).
-	providerKinds  = map[string]bool{"anthropic": true, "openai": true, "compat": true, "kimi": true, "xai": true, "ollama": true, "chatgpt": true}
+	// (openai, kimi, xai, gemini, ollama, compat), and chatgpt (OAuth Codex
+	// backend).
+	providerKinds  = map[string]bool{"anthropic": true, "openai": true, "compat": true, "kimi": true, "xai": true, "gemini": true, "ollama": true, "chatgpt": true}
 	groundingModes = map[string]bool{"none": true, "omniparser": true, "ax": true, "chain": true}
 	sandboxKinds   = map[string]bool{"host": true, "docker": true}
 	gatedCaps      = map[string]bool{"run_command": true, "read_file": true, "write_file": true, "window_focus": true, "window_move": true}
@@ -162,6 +164,13 @@ func (c Config) Validate() error {
 	}
 	if c.Agent.BudgetTokens < 0 || c.Agent.BudgetUSD < 0 {
 		return fmt.Errorf("config: budgets must be non-negative")
+	}
+	if c.Agent.BudgetUSD > 0 {
+		// A USD budget silently enforces nothing for a model without a pinned
+		// rate — reject up front rather than run uncapped.
+		if _, ok := pricing.Lookup(c.Provider.Model); !ok {
+			return fmt.Errorf("config: budget_usd is set but model %q has no pinned pricing; use budget_tokens instead", c.Provider.Model)
+		}
 	}
 	for _, cap := range c.Agent.Capabilities {
 		if !gatedCaps[cap] {

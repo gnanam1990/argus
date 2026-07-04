@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -50,7 +51,7 @@ func TestLoopbackDeliversCode(t *testing.T) {
 	}
 }
 
-func TestLoopbackStateMismatch(t *testing.T) {
+func TestLoopbackStateMismatchDroppedNotDelivered(t *testing.T) {
 	t.Parallel()
 	l, err := NewLoopbackListener("GOOD", "/callback")
 	if err != nil {
@@ -58,16 +59,33 @@ func TestLoopbackStateMismatch(t *testing.T) {
 	}
 	defer l.Close()
 
-	res, err := http.Get(l.RedirectURI() + "?code=x&state=BAD")
+	// A bogus/poisoning request with the wrong state arrives first. It must
+	// be answered 400 and NOT fill the one-shot result channel (H8): the
+	// listener has to keep waiting for the real callback.
+	res, err := http.Get(l.RedirectURI() + "?code=evil&state=BAD")
 	if err != nil {
 		t.Fatal(err)
 	}
+	body, _ := io.ReadAll(res.Body)
 	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "state mismatch") {
+		t.Fatalf("bogus request = %d %q, want 400 \"state mismatch\"", res.StatusCode, body)
+	}
+
+	// The real callback (matching state) arrives second and must still be
+	// delivered to Wait — proving the bogus request above was dropped rather
+	// than consuming the single result slot.
+	res2, err := http.Get(l.RedirectURI() + "?code=real123&state=GOOD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res2.Body.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if _, err := l.Wait(ctx); err != ErrStateMismatch {
-		t.Errorf("err = %v, want ErrStateMismatch", err)
+	code, err := l.Wait(ctx)
+	if err != nil || code != "real123" {
+		t.Errorf("Wait = %q, %v; want real123, nil", code, err)
 	}
 }
 

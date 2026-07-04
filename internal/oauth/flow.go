@@ -109,6 +109,16 @@ func postToken(ctx context.Context, httpc *http.Client, endpoint string, form ur
 	if tok.RefreshToken == "" {
 		tok.RefreshToken = prev.RefreshToken
 	}
+	// A refresh response commonly omits token_type and scope entirely (both
+	// are unchanged from the original grant); preserve them from prev the
+	// same way a rotated-out refresh token is preserved above, rather than
+	// silently dropping them.
+	if tok.TokenType == "" {
+		tok.TokenType = prev.TokenType
+	}
+	if len(tok.Scopes) == 0 {
+		tok.Scopes = prev.Scopes
+	}
 	return tok, nil
 }
 

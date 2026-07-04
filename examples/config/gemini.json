@@ -1,0 +1,10 @@
+{
+  "provider": {
+    "kind": "gemini",
+    "model": "gemini-2.5-flash",
+    "max_tokens": 4096
+  },
+  "agent": { "max_steps": 30, "retain_images": 3, "require_approval": true },
+  "grounding": { "mode": "none" },
+  "sandbox": { "kind": "host" }
+}

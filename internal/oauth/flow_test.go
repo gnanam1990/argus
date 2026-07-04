@@ -102,6 +102,29 @@ func TestRefresh(t *testing.T) {
 	}
 }
 
+func TestRefreshPreservesScopesAndTokenType(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		// The response omits both token_type and scope entirely.
+		_, _ = w.Write([]byte(`{"access_token":"NEW","expires_in":3600}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := Config{ClientID: "cid", TokenEndpoint: srv.URL}
+	prev := Token{RefreshToken: "OLD", TokenType: "Bearer", Scopes: []string{"openid", "profile"}}
+	tok, err := Refresh(context.Background(), nil, cfg, prev, fixedNow())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.TokenType != "Bearer" {
+		t.Errorf("token_type = %q, want preserved Bearer", tok.TokenType)
+	}
+	if len(tok.Scopes) != 2 || tok.Scopes[0] != "openid" || tok.Scopes[1] != "profile" {
+		t.Errorf("scopes = %v, want preserved [openid profile]", tok.Scopes)
+	}
+}
+
 func TestRefreshNoToken(t *testing.T) {
 	t.Parallel()
 	if _, err := Refresh(context.Background(), nil, Config{}, Token{}, nil); err != ErrNoRefreshToken {

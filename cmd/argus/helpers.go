@@ -39,3 +39,19 @@ func maskFunc(secrets []string) func(string) string {
 		return s
 	}
 }
+
+// gatherSecrets collects the values to redact: the provider API key plus any
+// comma-separated extras in ARGUS_SECRETS (passwords, tokens the agent may
+// encounter on screen text or type).
+func gatherSecrets(key string, getenv func(string) string) []string {
+	var secrets []string
+	if key != "" {
+		secrets = append(secrets, key)
+	}
+	for _, s := range strings.Split(getenv("ARGUS_SECRETS"), ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			secrets = append(secrets, s)
+		}
+	}
+	return secrets
+}

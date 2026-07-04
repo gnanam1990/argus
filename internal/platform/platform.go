@@ -49,7 +49,7 @@ func Preflight(getenv func(string) string) error {
 	switch displayServerFrom(getenv) {
 	case "wayland":
 		return fmt.Errorf("platform: host control is X11-only; this is a Wayland session — " +
-			"run against an Xvfb/X11 sandbox, or use the robotgo backend")
+			"log into an X11 session, or drive an X11 desktop in a container (sandbox.kind \"docker\")")
 	case "unknown":
 		return fmt.Errorf("platform: no display detected (DISPLAY/WAYLAND_DISPLAY unset); " +
 			"host control needs a running X server")

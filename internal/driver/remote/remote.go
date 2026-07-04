@@ -8,12 +8,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/gnanam1990/argus/internal/guest/proto"
 	"github.com/gnanam1990/argus/internal/transport"
 	"github.com/gnanam1990/argus/pkg/action"
 	"github.com/gnanam1990/argus/pkg/computer"
 )
+
+// closeTimeout bounds the close RPC so an unresponsive guest can't hang
+// Close forever.
+const closeTimeout = 5 * time.Second
 
 // Computer is a driver that forwards to a guest server over the transport.
 type Computer struct {
@@ -145,7 +150,11 @@ func (c *Computer) CursorPosition(ctx context.Context) (int, int, error) {
 	return r.X, r.Y, nil
 }
 
-// Close closes the guest computer.
+// Close closes the guest computer. It bounds the RPC with its own timeout
+// (rather than a bare context.Background()) so an unresponsive guest can't
+// hang the caller forever.
 func (c *Computer) Close() error {
-	return c.send(context.Background(), proto.CmdClose, nil, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+	defer cancel()
+	return c.send(ctx, proto.CmdClose, nil, nil)
 }

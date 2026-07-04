@@ -10,7 +10,8 @@ the environment only.
 | `anthropic` | native computer-use | `ANTHROPIC_API_KEY` | Claude with the first-class computer tool (raw screenshots, no grounder needed). |
 | `openai` | OpenAI-compatible | `OPENAI_API_KEY` | Chat Completions with an emulated computer function tool; engages set-of-marks grounding. |
 | `kimi` | OpenAI-compatible | `MOONSHOT_API_KEY` | Moonshot Kimi (`https://api.moonshot.ai/v1`). |
-| `xai` | OpenAI-compatible | `XAI_API_KEY` | xAI Grok (`https://api.x.ai/v1`). OAuth-subscription auth is planned. |
+| `xai` | OpenAI-compatible | `XAI_API_KEY` | xAI Grok (`https://api.x.ai/v1`). Also supports OAuth login (`argus auth login xai`). |
+| `gemini` | OpenAI-compatible | `GEMINI_API_KEY` | Google Gemini via its OpenAI-compatible endpoint (`generativelanguage.googleapis.com/v1beta/openai`). Use a vision model (e.g. `gemini-2.5-flash`). |
 | `ollama` | OpenAI-compatible | `OLLAMA_API_KEY` (usually unset) | Local models (`http://localhost:11434/v1`). |
 | `compat` | OpenAI-compatible | `ARGUS_API_KEY` | Any other OpenAI-compatible endpoint/router. Requires `base_url`. |
 | `chatgpt` | ChatGPT Codex (Responses API) | OAuth (`argus auth login chatgpt`) | Subscription login via the Codex backend — see [oauth-subscriptions.md](oauth-subscriptions.md). |

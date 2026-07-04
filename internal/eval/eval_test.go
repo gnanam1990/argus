@@ -31,14 +31,14 @@ func TestRunScoresTasks(t *testing.T) {
 		{Name: "incomplete", Prompt: "do partial"},
 		{Name: "boom", Prompt: "fail"},
 	}
-	factory := func(task eval.Task) agent.Session {
+	factory := func(task eval.Task) (agent.Session, error) {
 		switch task.Name {
 		case "ok":
-			return fakeSession{outcome: &agent.Outcome{Reason: agent.ReasonCompleted, Steps: 3}}
+			return fakeSession{outcome: &agent.Outcome{Reason: agent.ReasonCompleted, Steps: 3}}, nil
 		case "incomplete":
-			return fakeSession{outcome: &agent.Outcome{Reason: agent.ReasonMaxSteps, Steps: 40}}
+			return fakeSession{outcome: &agent.Outcome{Reason: agent.ReasonMaxSteps, Steps: 40}}, nil
 		default:
-			return fakeSession{err: errors.New("provider down")}
+			return fakeSession{err: errors.New("provider down")}, nil
 		}
 	}
 
@@ -58,6 +58,30 @@ func TestRunScoresTasks(t *testing.T) {
 	}
 	if byName["boom"].Pass || byName["boom"].Error == "" {
 		t.Errorf("boom result = %+v", byName["boom"])
+	}
+}
+
+// A task whose session cannot be built is recorded as a failure and the run
+// continues — one bad task must never abort or crash the whole eval.
+func TestRunFactoryErrorRecordedAndContinues(t *testing.T) {
+	t.Parallel()
+	tasks := []eval.Task{
+		{Name: "broken", Prompt: "x"},
+		{Name: "ok", Prompt: "y"},
+	}
+	factory := func(task eval.Task) (agent.Session, error) {
+		if task.Name == "broken" {
+			return nil, errors.New("no provider credentials")
+		}
+		return fakeSession{outcome: &agent.Outcome{Reason: agent.ReasonCompleted}}, nil
+	}
+
+	rep := eval.Run(context.Background(), tasks, factory, eval.Completed)
+	if rep.Total != 2 || rep.Passed != 1 {
+		t.Fatalf("report = %d/%d, want 1/2", rep.Passed, rep.Total)
+	}
+	if rep.Results[0].Task != "broken" || rep.Results[0].Pass || rep.Results[0].Error == "" {
+		t.Errorf("broken result = %+v", rep.Results[0])
 	}
 }
 

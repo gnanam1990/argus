@@ -52,6 +52,32 @@ func TestPresetChatGPTRedirectHostOverride(t *testing.T) {
 	}
 }
 
+func TestPresetRedirectPortOverride(t *testing.T) {
+	t.Parallel()
+	cfg, _ := Preset("chatgpt", func(k string) string {
+		if k == "ARGUS_OAUTH_CHATGPT_REDIRECT_PORT" {
+			return "9999"
+		}
+		return ""
+	})
+	if cfg.RedirectPort != 9999 {
+		t.Errorf("redirect port override = %d, want 9999", cfg.RedirectPort)
+	}
+}
+
+func TestPresetRedirectPortInvalidIgnored(t *testing.T) {
+	t.Parallel()
+	cfg, _ := Preset("chatgpt", func(k string) string {
+		if k == "ARGUS_OAUTH_CHATGPT_REDIRECT_PORT" {
+			return "not-a-port"
+		}
+		return ""
+	})
+	if cfg.RedirectPort != 1455 {
+		t.Errorf("invalid override should be ignored (keep preset default 1455); got %d", cfg.RedirectPort)
+	}
+}
+
 func TestPresetXAI(t *testing.T) {
 	t.Parallel()
 	cfg, ok := Preset("xai", func(string) string { return "" })

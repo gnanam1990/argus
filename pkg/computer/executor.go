@@ -92,6 +92,11 @@ func (e *Executor) Allowed(t action.ActionType) bool {
 // Execute validates a, enforces the capability gate, resolves its target
 // coordinates, and dispatches to the Computer.
 func (e *Executor) Execute(ctx context.Context, a action.Action) (action.Result, error) {
+	// Honor cancellation between batched actions: drivers may ignore ctx, so
+	// this is the reliable stop point once a run is cancelled.
+	if err := ctx.Err(); err != nil {
+		return action.Result{}, err
+	}
 	if err := a.Validate(); err != nil {
 		return action.Result{}, err
 	}

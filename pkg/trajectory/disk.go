@@ -15,8 +15,9 @@ import (
 // Disk is a Recorder that persists a run to a directory: a manifest.json with
 // provenance, a steps.jsonl of step records, and one PNG per observation. The
 // same layout reloads for replay and RL/training export. Secrets are masked at
-// record time (a leaked credential must never reach disk); result payloads that
-// duplicate the next observation are stripped to keep the log lean.
+// record time (a leaked credential must never reach disk); result text is
+// recorded (masked), while result screenshots are stripped — they duplicate
+// the next observation's PNG and would bloat the JSONL.
 type Disk struct {
 	mu     sync.Mutex
 	dir    string
@@ -35,12 +36,15 @@ func WithMask(fn func(string) string) DiskOption {
 }
 
 // Record is the on-disk shape of a step: the screenshot is a file reference
-// (not inline bytes), and secret-bearing text has been masked.
+// (not inline bytes), and secret-bearing text has been masked. Results carry
+// each action's output text (masked, screenshots stripped) so replays keep
+// command/read output.
 type Record struct {
 	Index          int             `json:"index"`
 	ScreenshotFile string          `json:"screenshot_file,omitempty"`
 	Text           string          `json:"text,omitempty"`
 	Actions        []action.Action `json:"actions,omitempty"`
+	Results        []action.Result `json:"results,omitempty"`
 	Usage          model.Usage     `json:"usage"`
 }
 
@@ -91,6 +95,11 @@ func (d *Disk) Append(s Step) error {
 	for _, a := range s.Actions {
 		a.Text = d.mask(a.Text) // typed text may contain secrets
 		rec.Actions = append(rec.Actions, a)
+	}
+	for _, r := range s.Results {
+		r.Output = d.mask(r.Output)
+		r.Screenshot = action.Image{} // duplicates the next observation's PNG
+		rec.Results = append(rec.Results, r)
 	}
 	if err := d.enc.Encode(rec); err != nil {
 		return fmt.Errorf("trajectory: encode step: %w", err)

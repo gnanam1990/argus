@@ -28,7 +28,10 @@ var _ grounder.Marker = Marker{}
 
 // Overlay draws each element's box and ID onto a copy of img and returns the
 // marked PNG plus the ID→box index the executor resolves clicks against.
+// Elements are renumbered first so detector ID collisions can never make a
+// drawn label resolve to a different element's box.
 func (Marker) Overlay(img action.Image, els []grounder.Element) (action.Image, map[int]action.Rect, error) {
+	els = grounder.Renumber(els)
 	src, _, err := image.Decode(bytes.NewReader(img.Data))
 	if err != nil {
 		return action.Image{}, nil, fmt.Errorf("mark: decode: %w", err)

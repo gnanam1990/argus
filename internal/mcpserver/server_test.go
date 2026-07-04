@@ -201,6 +201,38 @@ func TestServeEndToEnd(t *testing.T) {
 	}
 }
 
+// TestServeCapsLineLength checks a no-newline flood past maxLineBytes returns
+// a clean error instead of growing bufio's buffer without bound.
+func TestServeCapsLineLength(t *testing.T) {
+	t.Parallel()
+	huge := bytes.Repeat([]byte("a"), maxLineBytes+1) // no newline: one oversized "line"
+	var out bytes.Buffer
+	s := New(compfake.New())
+	err := s.Serve(context.Background(), bytes.NewReader(huge), &out)
+	if err == nil {
+		t.Fatal("expected an error for a line exceeding the byte limit")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error = %v, want a size-limit message", err)
+	}
+}
+
+// TestServeAllowsLineUpToLimit checks a line at (not over) the cap is still
+// processed normally, so the boundary itself isn't off-by-one.
+func TestServeAllowsLineUpToLimit(t *testing.T) {
+	t.Parallel()
+	// A single valid, newline-terminated request comfortably under the cap.
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n"
+	var out bytes.Buffer
+	s := New(compfake.New())
+	if err := s.Serve(context.Background(), strings.NewReader(in), &out); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	if !strings.Contains(out.String(), "tools") {
+		t.Errorf("expected a tools/list response, got %s", out.String())
+	}
+}
+
 func TestServeParseError(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer

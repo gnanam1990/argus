@@ -59,9 +59,15 @@ func authLogin(args []string, out io.Writer) error {
 	}
 	fmt.Fprint(out, oauthCaveat)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// signalCtx has no deadline (just SIGINT / process lifetime); ctx layers a
+	// 5-minute overall budget on top of it for the interactive flows below.
+	// loginLoopback needs BOTH: the 5-minute ctx bounds the browser wait, but
+	// derives the code-exchange's own short timeout from signalCtx (not ctx),
+	// so a human who takes most of the 5 minutes to click through consent
+	// doesn't also starve the token exchange.
+	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	ctx, cancel := context.WithTimeout(signalCtx, 5*time.Minute)
 	defer cancel()
 
 	mgr := oauth.NewManager(oauth.NewStore(""))
@@ -71,7 +77,7 @@ func authLogin(args []string, out io.Writer) error {
 	if device || cfg.DeviceAuthorizationEndpoint != "" && noBrowser {
 		tok, err = loginDevice(ctx, out, cfg)
 	} else {
-		tok, err = loginLoopback(ctx, out, cfg, noBrowser)
+		tok, err = loginLoopback(ctx, signalCtx, out, cfg, noBrowser)
 	}
 	if err != nil {
 		return err
@@ -87,7 +93,13 @@ func authLogin(args []string, out io.Writer) error {
 	return nil
 }
 
-func loginLoopback(ctx context.Context, out io.Writer, cfg oauth.Config, noBrowser bool) (oauth.Token, error) {
+// loginLoopback runs the browser (authorization-code + PKCE) flow. waitCtx
+// bounds how long we wait for the human to complete the browser round-trip
+// (the caller's overall, e.g. 5-minute, budget); codeCtx is the original,
+// non-shortened parent (just SIGINT/process lifetime) and is used to derive
+// the code exchange's own short-lived deadline once the callback lands, so a
+// slow human doesn't also starve the exchange.
+func loginLoopback(waitCtx, codeCtx context.Context, out io.Writer, cfg oauth.Config, noBrowser bool) (oauth.Token, error) {
 	state, err := oauth.NewState()
 	if err != nil {
 		return oauth.Token{}, err
@@ -117,11 +129,14 @@ func loginLoopback(ctx context.Context, out io.Writer, cfg oauth.Config, noBrows
 		fmt.Fprintln(out, "opened your browser to authorize; waiting…")
 	}
 
-	code, err := l.Wait(ctx)
+	code, err := l.Wait(waitCtx)
 	if err != nil {
 		return oauth.Token{}, err
 	}
-	return oauth.ExchangeCode(ctx, nil, cfg, code, redirectURI, pkce.Verifier, nil)
+
+	exchangeCtx, cancel := context.WithTimeout(codeCtx, 30*time.Second)
+	defer cancel()
+	return oauth.ExchangeCode(exchangeCtx, nil, cfg, code, redirectURI, pkce.Verifier, nil)
 }
 
 func loginDevice(ctx context.Context, out io.Writer, cfg oauth.Config) (oauth.Token, error) {

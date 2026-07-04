@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 
@@ -17,6 +18,10 @@ import (
 
 // protocolVersion is the MCP revision this server speaks.
 const protocolVersion = "2025-06-18"
+
+// maxLineBytes bounds a single JSON-RPC message read from stdin, so a client
+// that floods input with no newline can't grow bufio's buffer unboundedly.
+const maxLineBytes = 8 << 20 // 8 MiB
 
 // Server serves MCP tools backed by a Computer.
 type Server struct {
@@ -71,28 +76,31 @@ const (
 )
 
 // Serve reads newline-delimited JSON-RPC messages from in and writes responses
-// to out until in is exhausted or ctx is cancelled.
+// to out until in is exhausted or ctx is cancelled. Each line is capped at
+// maxLineBytes: a no-newline flood on stdin returns a clean error instead of
+// growing memory without bound.
 func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
-	r := bufio.NewReader(in)
+	sc := bufio.NewScanner(in)
+	sc.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
 	enc := json.NewEncoder(out)
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		line, err := r.ReadBytes('\n')
-		if len(line) > 0 {
-			resp, respond := s.handleLine(ctx, line)
-			if respond {
-				if werr := enc.Encode(resp); werr != nil {
-					return werr
+		if !sc.Scan() {
+			if err := sc.Err(); err != nil {
+				if errors.Is(err, bufio.ErrTooLong) {
+					return fmt.Errorf("mcpserver: line exceeds %d byte limit", maxLineBytes)
 				}
+				return err
 			}
+			return nil // EOF
 		}
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
+		resp, respond := s.handleLine(ctx, sc.Bytes())
+		if respond {
+			if werr := enc.Encode(resp); werr != nil {
+				return werr
+			}
 		}
 	}
 }

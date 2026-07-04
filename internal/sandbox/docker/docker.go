@@ -11,6 +11,8 @@ package docker
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -100,9 +102,36 @@ func (p *Provider) Provision(ctx context.Context, spec sandbox.Spec) (sandbox.Sa
 	if spec.Image != "" {
 		image = spec.Image
 	}
+	if err := validateImage(image); err != nil {
+		return nil, err
+	}
+	if err := validatePort(p.hostPort); err != nil {
+		return nil, err
+	}
+	if err := validatePort(p.guestPort); err != nil {
+		return nil, err
+	}
 
-	args := []string{"run", "-d", "--rm", "-p", fmt.Sprintf("%d:%d", p.hostPort, p.guestPort)}
+	// The container name is generated up front (rather than parsed from
+	// `docker run`'s stdout) so it's known even if the run invocation never
+	// returns one — e.g. ctx is cancelled mid-provision after the daemon has
+	// already created the container — and Stop/reap can always target it.
+	name, err := generateContainerName()
+	if err != nil {
+		return nil, err
+	}
+
+	args := []string{"run", "-d", "--rm", "--name", name, "-p", fmt.Sprintf("%d:%d", p.hostPort, p.guestPort)}
+	for _, port := range spec.Ports {
+		if err := validatePort(port); err != nil {
+			return nil, err
+		}
+		args = append(args, "-p", fmt.Sprintf("%d:%d", port, port))
+	}
 	for k, v := range spec.Env {
+		if err := validateEnvKey(k); err != nil {
+			return nil, err
+		}
 		args = append(args, "-e", k+"="+v)
 	}
 	if p.token != "" {
@@ -110,18 +139,19 @@ func (p *Provider) Provision(ctx context.Context, spec sandbox.Spec) (sandbox.Sa
 	}
 	args = append(args, image)
 
-	out, err := p.run.Run(ctx, nil, "docker", args...)
-	if err != nil {
+	if _, err := p.run.Run(ctx, nil, "docker", args...); err != nil {
+		// The daemon may have created the container even though this CLI
+		// invocation failed client-side (e.g. ctx cancellation killed `docker
+		// run` before it printed anything) — reap it by the name chosen
+		// above, using a background context so the same cancellation can't
+		// also abort the cleanup.
+		reap(p.run, name)
 		return nil, fmt.Errorf("docker run: %w", err)
-	}
-	id := strings.TrimSpace(string(out))
-	if id == "" {
-		return nil, fmt.Errorf("docker run: empty container id")
 	}
 
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", p.hostPort)
 	if err := p.health(ctx, baseURL); err != nil {
-		_, _ = p.run.Run(context.Background(), nil, "docker", "rm", "-f", id)
+		reap(p.run, name)
 		return nil, fmt.Errorf("docker: guest not ready: %w", err)
 	}
 
@@ -129,7 +159,54 @@ func (p *Provider) Provision(ctx context.Context, spec sandbox.Spec) (sandbox.Sa
 	if p.token != "" {
 		ropts = append(ropts, remote.WithToken(p.token))
 	}
-	return &dockerSandbox{run: p.run, id: id, comp: remote.New(baseURL, ropts...)}, nil
+	return &dockerSandbox{run: p.run, id: name, comp: remote.New(baseURL, ropts...)}, nil
+}
+
+// generateContainerName returns a fresh argus-guest-<hex> name using
+// crypto/rand (not math/rand — this becomes part of a command line, and
+// crypto/rand keeps it unpredictable and collision-resistant across
+// concurrent provisions).
+func generateContainerName() (string, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("docker: generate container name: %w", err)
+	}
+	return "argus-guest-" + hex.EncodeToString(b), nil
+}
+
+// reap best-effort force-removes a container by name, using a background
+// context so a cancellation that caused the failure being handled can't also
+// prevent cleanup.
+func reap(run Runner, name string) {
+	_, _ = run.Run(context.Background(), nil, "docker", "rm", "-f", name)
+}
+
+// validateImage rejects an image value that docker's CLI parser could read as
+// a flag instead of the image positional (e.g. spec.Image == "--privileged"
+// landing where the image argument is expected). `docker run` has no "--"
+// separator between options and the image, so rejecting flag-shaped values is
+// the mitigation.
+func validateImage(image string) error {
+	if image == "" || strings.HasPrefix(image, "-") {
+		return fmt.Errorf("docker: invalid image %q", image)
+	}
+	return nil
+}
+
+// validateEnvKey rejects an env var name that could be misread as a flag.
+func validateEnvKey(key string) error {
+	if key == "" || strings.HasPrefix(key, "-") {
+		return fmt.Errorf("docker: invalid env key %q", key)
+	}
+	return nil
+}
+
+// validatePort rejects a port number outside the valid TCP range.
+func validatePort(port int) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("docker: invalid port %d (must be 1-65535)", port)
+	}
+	return nil
 }
 
 type dockerSandbox struct {

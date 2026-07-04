@@ -38,10 +38,14 @@ func runTUI(
 
 	m := tui.NewModel(task, cfg.Provider.Kind, cfg.Provider.Model, cancel)
 	prog := tui.NewProgram(m)
+	mask := maskFunc(secrets)
 
 	// Approvals prompt inside the TUI; the display middleware renders the loop.
-	mw := app.BuildMiddleware(cfg, secrets, discardLogger(), runID, tui.Approver(prog))
-	mw = append(mw, tui.NewMiddleware(prog, cfg.Provider.Kind, cfg.Provider.Model))
+	// Everything displayed passes through the secret mask.
+	mw := app.BuildMiddleware(cfg, secrets, discardLogger(), runID, tui.MaskedApprover(prog, mask))
+	display := tui.NewMiddleware(prog, cfg.Provider.Kind, cfg.Provider.Model)
+	display.SetMask(mask)
+	mw = append(mw, display)
 	r := app.NewRunner(cfg, prov, comp, gr, marker, rec, mw)
 
 	var (
@@ -54,13 +58,13 @@ func runTUI(
 		outcome, runErr = r.Run(runCtx, task)
 		dm := tui.DoneMsg{}
 		if outcome != nil {
-			dm.Reason, dm.Steps, dm.FinalText = outcome.Reason, outcome.Steps, outcome.FinalText
+			dm.Reason, dm.Steps, dm.FinalText = outcome.Reason, outcome.Steps, mask(outcome.FinalText)
 		}
 		if runErr != nil {
 			if dm.Reason == "" {
 				dm.Reason = agent.ReasonError
 			}
-			dm.Err = runErr.Error()
+			dm.Err = mask(runErr.Error())
 		}
 		prog.Send(dm)
 	}()
@@ -79,7 +83,7 @@ func runTUI(
 	if outcome != nil {
 		fmt.Fprintf(out, "outcome: %s in %d steps\n", outcome.Reason, outcome.Steps)
 		if outcome.FinalText != "" {
-			fmt.Fprintln(out, outcome.FinalText)
+			fmt.Fprintln(out, mask(outcome.FinalText))
 		}
 		if cost, ok := pricing.Cost(cfg.Provider.Model, outcome.Usage); ok {
 			fmt.Fprintf(out, "cost: $%.4f (in %d / out %d tokens)\n",

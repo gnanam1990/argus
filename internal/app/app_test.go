@@ -46,9 +46,10 @@ func TestBuildProviderKinds(t *testing.T) {
 
 func TestCompatPresets(t *testing.T) {
 	t.Parallel()
-	// Kimi, xAI, and Ollama are OpenAI-compatible presets: they build without
-	// a base_url (the preset supplies a default) and read distinct key envs.
-	for _, kind := range []string{"kimi", "xai", "ollama"} {
+	// Kimi, xAI, Gemini, and Ollama are OpenAI-compatible presets: they build
+	// without a base_url (the preset supplies a default) and read distinct key
+	// envs.
+	for _, kind := range []string{"kimi", "xai", "gemini", "ollama"} {
 		cfg := config.Defaults()
 		cfg.Provider.Kind = kind
 		cfg.Provider.Model = "m"
@@ -70,6 +71,7 @@ func TestCompatPresets(t *testing.T) {
 		"openai":    "OPENAI_API_KEY",
 		"kimi":      "MOONSHOT_API_KEY",
 		"xai":       "XAI_API_KEY",
+		"gemini":    "GEMINI_API_KEY",
 		"ollama":    "OLLAMA_API_KEY",
 		"compat":    "ARGUS_API_KEY",
 	}

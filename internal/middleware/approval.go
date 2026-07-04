@@ -35,10 +35,15 @@ type Approval struct {
 	approver Approver
 }
 
-// NewApproval builds an approval gate. A nil policy uses DefaultRiskPolicy.
+// NewApproval builds an approval gate. A nil policy uses DefaultRiskPolicy. A
+// nil approver fails closed: every risky action is denied (an approval gate
+// with nobody to ask must never wave actions through or panic).
 func NewApproval(policy RiskPolicy, approver Approver) *Approval {
 	if policy == nil {
 		policy = DefaultRiskPolicy
+	}
+	if approver == nil {
+		approver = ApproverFunc(func(context.Context, action.Action) (bool, error) { return false, nil })
 	}
 	return &Approval{policy: policy, approver: approver}
 }

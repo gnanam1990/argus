@@ -70,7 +70,18 @@ func (l *LoopbackListener) handle(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	code, err := parseCallback(r.URL.Query(), l.state)
+	q := r.URL.Query()
+	if q.Get("state") != l.state {
+		// A request with the wrong (or missing) state must never reach the
+		// result channel: the channel holds exactly one slot, so a single
+		// stray or spoofed request hitting this fixed/ephemeral port before
+		// the real provider redirect arrives would otherwise fill it and
+		// poison the login (H8). Answer it and keep listening for the real
+		// callback.
+		http.Error(w, "state mismatch", http.StatusBadRequest)
+		return
+	}
+	code, err := parseCallback(q, l.state)
 	if err != nil {
 		fmt.Fprintln(w, "Authorization failed. You may close this window.")
 	} else {

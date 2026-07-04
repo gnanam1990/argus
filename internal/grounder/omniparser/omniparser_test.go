@@ -1,6 +1,7 @@
 package omniparser_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -60,6 +61,50 @@ func TestDetectServiceError(t *testing.T) {
 	c := omniparser.New(srv.URL)
 	if _, err := c.Detect(context.Background(), action.Image{}); err == nil {
 		t.Error("expected service error")
+	}
+}
+
+// TestDetectCapsResponseBody checks an oversized response doesn't hang or
+// grow memory without bound: it's read up to the cap and then fails to
+// decode (truncated JSON) rather than blocking on an unbounded ReadAll.
+func TestDetectCapsResponseBody(t *testing.T) {
+	t.Parallel()
+	huge := bytes.Repeat([]byte("a"), 9<<20) // 9 MiB, over the 8 MiB cap
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(huge)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := omniparser.New(srv.URL)
+	if _, err := c.Detect(context.Background(), action.Image{}); err == nil {
+		t.Error("expected a decode error from the capped (truncated) response")
+	}
+}
+
+// TestDetectTimeoutTripsBreaker checks a client-side timeout (a hanging
+// service) counts as a breaker failure like any other error, once Do returns
+// it — verifying H14's fix end to end through the public API.
+func TestDetectTimeoutTripsBreaker(t *testing.T) {
+	t.Parallel()
+	block := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-block // never respond within the client's timeout
+	}))
+	t.Cleanup(func() { close(block); srv.Close() })
+
+	c := omniparser.New(srv.URL,
+		omniparser.WithHTTPClient(&http.Client{Timeout: 20 * time.Millisecond}),
+		omniparser.WithBreaker(1, time.Minute),
+	)
+	if _, err := c.Detect(context.Background(), action.Image{}); err == nil {
+		t.Fatal("expected a timeout error")
+	}
+
+	// threshold=1: the timeout above should already have opened the breaker,
+	// so this call fails fast without hitting the (still-blocked) server.
+	_, err := c.Detect(context.Background(), action.Image{})
+	if !errors.Is(err, omniparser.ErrCircuitOpen) {
+		t.Errorf("2nd err = %v, want ErrCircuitOpen (timeout should have opened the breaker)", err)
 	}
 }
 

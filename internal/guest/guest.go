@@ -6,6 +6,7 @@ package guest
 import (
 	"context"
 	"encoding/json"
+	"sync"
 
 	"github.com/gnanam1990/argus/internal/guest/proto"
 	"github.com/gnanam1990/argus/internal/transport"
@@ -15,7 +16,8 @@ import (
 
 // Server dispatches commands to a Computer. It implements transport.Handler.
 type Server struct {
-	c computer.Computer
+	mu sync.Mutex // serializes driver access: see Handle
+	c  computer.Computer
 }
 
 // New builds a guest server over c.
@@ -23,8 +25,14 @@ func New(c computer.Computer) *Server { return &Server{c: c} }
 
 var _ transport.Handler = (*Server)(nil)
 
-// Handle executes one command and returns its reply.
+// Handle executes one command and returns its reply. Commands are serialized
+// under a single mutex: the underlying Computer is a stateful pointer/keyboard
+// device, so two commands racing (e.g. a click landing between another
+// request's move and its own click) would otherwise corrupt each other's
+// coordinates.
 func (s *Server) Handle(ctx context.Context, req transport.Request) transport.Response {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	id := req.ID
 	switch req.Command {
 	case proto.CmdScreenshot:

@@ -54,6 +54,14 @@ func (c aesGCMCrypter) gcm() (cipher.AEAD, error) {
 
 // loadOrCreateSecret reads the per-user AES key, creating it (0600) if absent
 // and create is true.
+//
+// Creation is fully atomic AND exclusive: the key is written to a private
+// temp file first, then hard-linked into place. Link fails with ErrExist when
+// a concurrent creator won, so racers converge on one key (H9 — the old
+// read-then-write let both racers persist different keys, silently orphaning
+// whichever provider's tokens were sealed under the loser). Because the path
+// only ever appears with its full contents, a reader can never observe a
+// partially written secret; a wrong-length file is genuine corruption.
 func loadOrCreateSecret(path string, create bool) ([]byte, error) {
 	b, err := os.ReadFile(path)
 	if err == nil {
@@ -75,8 +83,39 @@ func loadOrCreateSecret(path string, create bool) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, secret); err != nil {
 		return nil, fmt.Errorf("oauth: generate secret: %w", err)
 	}
-	if err := writeFileAtomic(path, secret, 0o600); err != nil {
-		return nil, err
+
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return nil, fmt.Errorf("oauth: temp secret: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return nil, fmt.Errorf("oauth: chmod secret: %w", err)
+	}
+	if _, err := tmp.Write(secret); err != nil {
+		tmp.Close()
+		return nil, fmt.Errorf("oauth: write secret: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, fmt.Errorf("oauth: close secret: %w", err)
+	}
+
+	if err := os.Link(tmpName, path); err != nil {
+		if os.IsExist(err) {
+			// A concurrent creator won the link; its key — complete by
+			// construction — is the secret, not ours.
+			w, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return nil, fmt.Errorf("oauth: read secret: %w", rerr)
+			}
+			if len(w) != secretBytes {
+				return nil, fmt.Errorf("oauth: token secret has wrong length")
+			}
+			return w, nil
+		}
+		return nil, fmt.Errorf("oauth: create secret: %w", err)
 	}
 	return secret, nil
 }

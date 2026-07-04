@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gnanam1990/argus/internal/guest"
 	"github.com/gnanam1990/argus/internal/guest/proto"
@@ -129,6 +131,76 @@ func TestBadParamsError(t *testing.T) {
 	req := transport.Request{ID: "1", Command: proto.CmdClick, Params: json.RawMessage(`"not-an-object"`)}
 	if resp := s.Handle(context.Background(), req); resp.OK {
 		t.Error("malformed params should produce an error response")
+	}
+}
+
+// concurrencyProbe tracks the maximum number of overlapping enter/leave pairs
+// observed, to detect whether calls into the driver actually overlapped.
+type concurrencyProbe struct {
+	mu      sync.Mutex
+	active  int
+	maxSeen int
+}
+
+func (p *concurrencyProbe) enter() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.active++
+	if p.active > p.maxSeen {
+		p.maxSeen = p.active
+	}
+}
+
+func (p *concurrencyProbe) leave() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.active--
+}
+
+func (p *concurrencyProbe) max() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.maxSeen
+}
+
+// slowComputer wraps a fake Computer and instruments MoveMouse with the probe
+// plus a short sleep, so concurrent Handle calls would visibly overlap here
+// if Handle did not serialize driver access.
+type slowComputer struct {
+	*compfake.Computer
+	probe *concurrencyProbe
+}
+
+func (s *slowComputer) MoveMouse(ctx context.Context, x, y int) error {
+	s.probe.enter()
+	defer s.probe.leave()
+	time.Sleep(5 * time.Millisecond)
+	return s.Computer.MoveMouse(ctx, x, y)
+}
+
+// TestHandleSerializesDriverAccess drives many concurrent Handle calls and
+// checks the underlying Computer never sees more than one in flight at a
+// time (guest server must serialize commands so pointer moves/clicks from
+// different requests can't interleave).
+func TestHandleSerializesDriverAccess(t *testing.T) {
+	t.Parallel()
+	probe := &concurrencyProbe{}
+	sc := &slowComputer{Computer: compfake.New(), probe: probe}
+	s := guest.New(sc)
+
+	const n = 10
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			handle(t, s, proto.CmdMove, proto.PointParams{X: 1, Y: 2})
+		}()
+	}
+	wg.Wait()
+
+	if got := probe.max(); got > 1 {
+		t.Errorf("max concurrent driver calls = %d, want 1 (Handle should serialize)", got)
 	}
 }
 

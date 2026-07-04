@@ -30,6 +30,17 @@ import (
 // a different version is rejected so service drift surfaces immediately.
 const SchemaVersion = 2
 
+const (
+	// responseCap bounds how much of a /parse response body is read, so a
+	// runaway or malicious service response can't OOM the caller.
+	responseCap = 8 << 20 // 8 MiB
+	// defaultTimeout bounds a request when the caller does not supply an
+	// *http.Client via WithHTTPClient, so a hanging GPU service can't stall
+	// every step forever — and, once Do returns that timeout as an error, it
+	// counts as a breaker failure like any other request error.
+	defaultTimeout = 15 * time.Second
+)
+
 // ErrCircuitOpen is returned while the breaker is open (service unhealthy).
 var ErrCircuitOpen = errors.New("omniparser: circuit open (service unhealthy)")
 
@@ -60,10 +71,12 @@ func WithClock(now func() time.Time) Option {
 	return func(cl *Client) { cl.breaker.now = now }
 }
 
-// New builds a client for the OmniParser service at baseURL.
+// New builds a client for the OmniParser service at baseURL. The default HTTP
+// client has its own defaultTimeout (rather than sharing the mutable
+// http.DefaultClient); pass WithHTTPClient to override it.
 func New(baseURL string, opts ...Option) *Client {
 	c := &Client{
-		http:    http.DefaultClient,
+		http:    &http.Client{Timeout: defaultTimeout},
 		baseURL: baseURL,
 		breaker: &breaker{threshold: 3, cooldown: 30 * time.Second, now: time.Now},
 	}
@@ -128,7 +141,10 @@ func (c *Client) detect(ctx context.Context, img action.Image) ([]grounder.Eleme
 		return nil, fmt.Errorf("omniparser: %w", err)
 	}
 	defer res.Body.Close()
-	raw, _ := io.ReadAll(res.Body)
+	raw, err := io.ReadAll(io.LimitReader(res.Body, responseCap))
+	if err != nil {
+		return nil, fmt.Errorf("omniparser: read response: %w", err)
+	}
 	if res.StatusCode >= 400 {
 		return nil, fmt.Errorf("omniparser api error (status %d): %s", res.StatusCode, string(raw))
 	}
@@ -161,34 +177,70 @@ func (c *Client) detect(ctx context.Context, img action.Image) ([]grounder.Eleme
 	return els, nil
 }
 
-// breaker is a minimal consecutive-failure circuit breaker.
+// breaker is a minimal three-state circuit breaker: closed (healthy) → open
+// (threshold consecutive failures; every call fails fast) → half-open (the
+// cooldown has elapsed; exactly one probe call is let through while every
+// other caller still fails fast) → closed again on a successful probe, or
+// back to open for another full cooldown on a failed one.
+//
+// The old two-state version (closed/open only) let every caller through the
+// instant the cooldown expired, so a burst of concurrent requests could all
+// hit a still-recovering service at once; probing gates that down to one.
 type breaker struct {
 	mu        sync.Mutex
 	threshold int
 	cooldown  time.Duration
 	now       func() time.Time
 	fails     int
+	open      bool
 	openUntil time.Time
+	probing   bool
 }
 
+// allow reports whether a call may proceed. Once open, it transitions to
+// half-open (admitting exactly one probing call) only after the cooldown has
+// elapsed; while a probe is outstanding, every other caller still fails fast.
 func (b *breaker) allow() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return !b.now().Before(b.openUntil)
+	if !b.open {
+		return true
+	}
+	if b.now().Before(b.openUntil) {
+		return false // still fully open
+	}
+	if b.probing {
+		return false // a probe is already in flight
+	}
+	b.probing = true
+	return true
 }
 
+// success records a successful call. A successful probe closes the breaker
+// entirely; a success while closed is a no-op (fails is already 0).
 func (b *breaker) success() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.fails = 0
+	b.open = false
+	b.probing = false
 	b.openUntil = time.Time{}
 }
 
+// failure records a failed call. A failed probe reopens for another full
+// cooldown; a failure while closed only opens once fails reaches threshold.
 func (b *breaker) failure() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.probing = false
+	if b.open {
+		b.openUntil = b.now().Add(b.cooldown)
+		b.fails = 0
+		return
+	}
 	b.fails++
 	if b.fails >= b.threshold {
+		b.open = true
 		b.openUntil = b.now().Add(b.cooldown)
 		b.fails = 0
 	}

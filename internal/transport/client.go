@@ -7,6 +7,19 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
+	"time"
+)
+
+const (
+	// maxResponseBytes caps how much of a guest response body Send will read,
+	// so a misbehaving or malicious guest can't OOM the host with an
+	// unbounded response.
+	maxResponseBytes = 8 << 20 // 8 MiB
+	// defaultTimeout bounds a request when the caller does not supply an
+	// *http.Client via WithHTTPClient, so a hung guest can't wedge the agent
+	// forever.
+	defaultTimeout = 30 * time.Second
 )
 
 // Client sends commands to a guest server.
@@ -15,7 +28,7 @@ type Client struct {
 	baseURL string
 	token   string
 	traceID string
-	seq     int
+	seq     atomic.Int64
 }
 
 // ClientOption configures a Client.
@@ -30,9 +43,12 @@ func WithToken(token string) ClientOption { return func(cl *Client) { cl.token =
 // WithTraceID sets a correlation id sent on each request.
 func WithTraceID(id string) ClientOption { return func(cl *Client) { cl.traceID = id } }
 
-// NewClient builds a client for the guest at baseURL.
+// NewClient builds a client for the guest at baseURL. The default HTTP client
+// has its own 30s timeout (rather than sharing the mutable http.DefaultClient)
+// so it can't be silently repointed by an unrelated part of the process; pass
+// WithHTTPClient to override the timeout or transport.
 func NewClient(baseURL string, opts ...ClientOption) *Client {
-	c := &Client{http: http.DefaultClient, baseURL: baseURL}
+	c := &Client{http: &http.Client{Timeout: defaultTimeout}, baseURL: baseURL}
 	for _, o := range opts {
 		o(c)
 	}
@@ -41,10 +57,11 @@ func NewClient(baseURL string, opts ...ClientOption) *Client {
 
 // Send issues a command and returns the decoded response. A transport-level
 // failure (network, non-2xx) is returned as an error; a command-level failure
-// is carried in Response.Error with OK=false.
+// is carried in Response.Error with OK=false. seq is an atomic counter so
+// concurrent callers on the same Client get distinct request ids.
 func (c *Client) Send(ctx context.Context, command string, params any) (Response, error) {
-	c.seq++
-	req := Request{ID: fmt.Sprintf("req-%d", c.seq), Command: command, TraceID: c.traceID}
+	seq := c.seq.Add(1)
+	req := Request{ID: fmt.Sprintf("req-%d", seq), Command: command, TraceID: c.traceID}
 	if params != nil {
 		b, err := json.Marshal(params)
 		if err != nil {
@@ -71,7 +88,10 @@ func (c *Client) Send(ctx context.Context, command string, params any) (Response
 		return Response{}, fmt.Errorf("transport: %w", err)
 	}
 	defer res.Body.Close()
-	raw, _ := io.ReadAll(res.Body)
+	raw, err := io.ReadAll(io.LimitReader(res.Body, maxResponseBytes))
+	if err != nil {
+		return Response{}, fmt.Errorf("transport: read response: %w", err)
+	}
 	if res.StatusCode >= 400 {
 		return Response{}, fmt.Errorf("transport: guest returned %d: %s", res.StatusCode, string(raw))
 	}

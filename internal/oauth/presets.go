@@ -1,6 +1,9 @@
 package oauth
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // PresetsAllowed reports whether OAuth presets are enabled. Presets reuse
 // public, undocumented CLI client identities and may violate provider ToS, so
@@ -65,5 +68,13 @@ func applyPresetEnv(cfg *Config, up string, getenv func(string) string) {
 	set("REDIRECT_HOST", &cfg.RedirectHost)
 	if v := getenv("ARGUS_OAUTH_" + up + "_SCOPES"); v != "" {
 		cfg.Scopes = strings.Fields(v)
+	}
+	if v := getenv("ARGUS_OAUTH_" + up + "_REDIRECT_PORT"); v != "" {
+		// An invalid (non-integer) value is ignored — the preset's default
+		// port stays in effect — rather than propagating a bad port number
+		// into the loopback listener bind.
+		if port, err := strconv.Atoi(v); err == nil {
+			cfg.RedirectPort = port
+		}
 	}
 }

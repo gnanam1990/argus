@@ -31,11 +31,20 @@ type Middleware struct {
 	provider string
 	modelID  string
 	step     int
+	mask     func(string) string
 }
 
 // NewMiddleware builds the display middleware.
 func NewMiddleware(s sender, provider, modelID string) *Middleware {
-	return &Middleware{send: s, provider: provider, modelID: modelID}
+	return &Middleware{send: s, provider: provider, modelID: modelID, mask: func(s string) string { return s }}
+}
+
+// SetMask installs a redactor applied to all displayed text (reasoning and
+// action labels), so registered secrets never render on screen.
+func (m *Middleware) SetMask(fn func(string) string) {
+	if fn != nil {
+		m.mask = fn
+	}
 }
 
 // OnRunStart announces the task.
@@ -53,13 +62,13 @@ func (m *Middleware) OnLLMStart(_ context.Context, _ *model.Conversation) error 
 // OnLLMEnd records the model's reasoning for this step.
 func (m *Middleware) OnLLMEnd(_ context.Context, turn *model.Turn) error {
 	m.step++
-	m.send.Send(stepMsg{index: m.step, reasoning: turn.Text()})
+	m.send.Send(stepMsg{index: m.step, reasoning: m.mask(turn.Text())})
 	return nil
 }
 
 // OnActionResult shows an executed action.
 func (m *Middleware) OnActionResult(_ context.Context, a action.Action, _ action.Result) error {
-	m.send.Send(actionMsg{label: actionLabel(a), ok: true})
+	m.send.Send(actionMsg{label: m.mask(actionLabel(a)), ok: true})
 	return nil
 }
 
@@ -70,15 +79,29 @@ func (m *Middleware) OnUsage(_ context.Context, u model.Usage) error {
 }
 
 // approver answers risky-action approvals inside the TUI.
-type approver struct{ send sender }
+type approver struct {
+	send sender
+	mask func(string) string
+}
 
 // Approver builds a middleware.Approver that prompts in the TUI.
-func Approver(s sender) middleware.Approver { return approver{send: s} }
+func Approver(s sender) middleware.Approver {
+	return approver{send: s, mask: func(s string) string { return s }}
+}
+
+// MaskedApprover is Approver with a redactor applied to the displayed label
+// (the action itself is approved/denied unmodified).
+func MaskedApprover(s sender, fn func(string) string) middleware.Approver {
+	if fn == nil {
+		return Approver(s)
+	}
+	return approver{send: s, mask: fn}
+}
 
 // Approve sends an approval request to the TUI and waits for the reply.
 func (a approver) Approve(ctx context.Context, act action.Action) (bool, error) {
 	reply := make(chan bool, 1)
-	a.send.Send(ApprovalMsg{Label: actionLabel(act), Reply: reply})
+	a.send.Send(ApprovalMsg{Label: a.mask(actionLabel(act)), Reply: reply})
 	select {
 	case ok := <-reply:
 		return ok, nil

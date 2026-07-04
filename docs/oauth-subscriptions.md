@@ -24,7 +24,7 @@ export ARGUS_OAUTH_ALLOW_PRESETS=1
 
 ```sh
 argus auth login xai         # browser (loopback) flow
-argus auth login chatgpt     # browser (loopback) flow, fixed callback port 1455
+argus auth login chatgpt     # browser (loopback) flow, callback port 1455 by default (override below)
 argus auth login xai --device        # headless device-code flow (where supported)
 argus auth login xai --no-browser    # print the URL instead of opening a browser
 argus auth status            # show which providers are logged in (redacted)
@@ -56,6 +56,7 @@ ARGUS_OAUTH_<PROVIDER>_AUTH_URL
 ARGUS_OAUTH_<PROVIDER>_TOKEN_URL
 ARGUS_OAUTH_<PROVIDER>_DEVICE_URL
 ARGUS_OAUTH_<PROVIDER>_SCOPES         # space-separated
+ARGUS_OAUTH_<PROVIDER>_REDIRECT_PORT  # loopback callback port (integer; invalid values are ignored)
 ARGUS_OAUTH_HOME                       # token store directory
 ```
 

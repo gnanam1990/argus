@@ -50,6 +50,18 @@ func contains(hay []string, needles ...string) bool {
 	return true
 }
 
+// nameFromRunArgs extracts the value passed to --name in a `docker run`
+// argument list, for asserting the same generated name is used consistently
+// across the run call and any later exec/rm calls.
+func nameFromRunArgs(args []string) string {
+	for i, a := range args {
+		if a == "--name" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
 func newProvider(f *fakeRunner, opts ...Option) *Provider {
 	base := []Option{WithRunner(f), WithHealthCheck(noHealth)}
 	return New(append(base, opts...)...)
@@ -84,12 +96,13 @@ func TestExecReadWriteStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	name := sb.(*dockerSandbox).id
 
 	res, err := sb.Exec(context.Background(), "ls -la", time.Second)
 	if err != nil || res.Stdout != "cmd-output" {
 		t.Fatalf("exec = %+v, %v", res, err)
 	}
-	if !contains(f.last(), "exec", "container123", "sh", "-c", "ls -la") {
+	if !contains(f.last(), "exec", name, "sh", "-c", "ls -la") {
 		t.Errorf("exec args = %v", f.last())
 	}
 
@@ -97,14 +110,14 @@ func TestExecReadWriteStop(t *testing.T) {
 	if err != nil || string(data) != "cmd-output" {
 		t.Fatalf("read = %q, %v", data, err)
 	}
-	if !contains(f.last(), "exec", "container123", "cat", "/etc/hosts") {
+	if !contains(f.last(), "exec", name, "cat", "/etc/hosts") {
 		t.Errorf("read args = %v", f.last())
 	}
 
 	if err := sb.WriteFile(context.Background(), "/tmp/x", []byte("payload")); err != nil {
 		t.Fatal(err)
 	}
-	if !contains(f.last(), "exec", "-i", "container123", "cat > '/tmp/x'") {
+	if !contains(f.last(), "exec", "-i", name, "cat > '/tmp/x'") {
 		t.Errorf("write args = %v", f.last())
 	}
 	if string(f.stdins[len(f.stdins)-1]) != "payload" {
@@ -114,16 +127,67 @@ func TestExecReadWriteStop(t *testing.T) {
 	if err := sb.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !contains(f.last(), "rm", "-f", "container123") {
+	if !contains(f.last(), "rm", "-f", name) {
 		t.Errorf("stop args = %v", f.last())
 	}
 }
 
-func TestProvisionEmptyID(t *testing.T) {
+// TestProvisionUsesGeneratedContainerName checks the container is named
+// up front (argus-guest-<hex>, via --name) and that name — not anything
+// parsed from docker's stdout — is what the sandbox uses as its identifier.
+func TestProvisionUsesGeneratedContainerName(t *testing.T) {
+	t.Parallel()
+	f := &fakeRunner{}
+	sb, err := newProvider(f).Provision(context.Background(), specEmpty())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := f.calls[0]
+	if !contains(run, "run", "-d", "--rm", "--name") {
+		t.Errorf("run args missing --name: %v", run)
+	}
+	ds, ok := sb.(*dockerSandbox)
+	if !ok || !strings.HasPrefix(ds.id, "argus-guest-") {
+		t.Errorf("sandbox id = %+v, want an argus-guest-<hex> prefix", sb)
+	}
+	if got := nameFromRunArgs(run); got != ds.id {
+		t.Errorf("--name value %q does not match sandbox id %q", got, ds.id)
+	}
+}
+
+// TestProvisionIgnoresRunStdout replaces the old "empty container id" check:
+// since the container is named up front and --name'd explicitly, whatever
+// `docker run` prints to stdout (even garbage) no longer matters for
+// identity, so provisioning must still succeed.
+func TestProvisionIgnoresRunStdout(t *testing.T) {
 	t.Parallel()
 	f := &fakeRunner{runID: "   "}
+	sb, err := newProvider(f).Provision(context.Background(), specEmpty())
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if sb == nil {
+		t.Fatal("nil sandbox")
+	}
+}
+
+// TestProvisionCancelledRunReapsGeneratedName is the H8-adjacent "pre-ID
+// orphan fix" regression test: even when `docker run` itself returns an
+// error (e.g. because ctx was cancelled mid-invocation and the daemon may
+// have created the container anyway), Provision must reap the container by
+// the SAME name it passed via --name.
+func TestProvisionCancelledRunReapsGeneratedName(t *testing.T) {
+	t.Parallel()
+	f := &fakeRunner{err: context.Canceled}
 	if _, err := newProvider(f).Provision(context.Background(), specEmpty()); err == nil {
-		t.Error("empty container id should error")
+		t.Fatal("expected an error from the cancelled/failed run")
+	}
+	name := nameFromRunArgs(f.calls[0])
+	if name == "" {
+		t.Fatal("run args missing --name")
+	}
+	if !contains(f.last(), "rm", "-f", name) {
+		t.Fatalf("expected a reap call for %q; last call = %v", name, f.last())
 	}
 }
 
@@ -136,9 +200,65 @@ func TestProvisionHealthFailsRemovesContainer(t *testing.T) {
 	if _, err := p.Provision(context.Background(), specEmpty()); err == nil {
 		t.Fatal("expected health failure")
 	}
-	// The failed container must be reaped.
-	if !contains(f.last(), "rm", "-f", "container123") {
-		t.Errorf("failed provision should reap the container; last = %v", f.last())
+	name := nameFromRunArgs(f.calls[0])
+	if name == "" {
+		t.Fatal("run args missing --name")
+	}
+	// The failed container must be reaped by the same generated name.
+	if !contains(f.last(), "rm", "-f", name) {
+		t.Errorf("failed provision should reap %q; last = %v", name, f.last())
+	}
+}
+
+func TestProvisionRejectsFlagShapedImage(t *testing.T) {
+	t.Parallel()
+	f := &fakeRunner{}
+	if _, err := newProvider(f).Provision(context.Background(), sandbox.Spec{Image: "--privileged"}); err == nil {
+		t.Fatal("expected an error for a flag-shaped image")
+	}
+	if len(f.calls) != 0 {
+		t.Errorf("docker should never be invoked for a rejected image; calls = %v", f.calls)
+	}
+}
+
+func TestProvisionRejectsFlagShapedEnvKey(t *testing.T) {
+	t.Parallel()
+	f := &fakeRunner{}
+	spec := sandbox.Spec{Env: map[string]string{"--evil": "1"}}
+	if _, err := newProvider(f).Provision(context.Background(), spec); err == nil {
+		t.Fatal("expected an error for a flag-shaped env key")
+	}
+	if len(f.calls) != 0 {
+		t.Errorf("docker should never be invoked for a rejected env key; calls = %v", f.calls)
+	}
+}
+
+func TestProvisionRejectsInvalidPort(t *testing.T) {
+	t.Parallel()
+	f := &fakeRunner{}
+	spec := sandbox.Spec{Ports: []int{70000}}
+	if _, err := newProvider(f).Provision(context.Background(), spec); err == nil {
+		t.Fatal("expected an error for an out-of-range port")
+	}
+	if len(f.calls) != 0 {
+		t.Errorf("docker should never be invoked for a rejected port; calls = %v", f.calls)
+	}
+}
+
+// TestProvisionMergesSpecPorts checks sandbox.Spec.Ports are merged into the
+// -p mappings (guestPort:guestPort form) alongside the provider's own
+// WithPorts mapping, rather than being silently ignored.
+func TestProvisionMergesSpecPorts(t *testing.T) {
+	t.Parallel()
+	f := &fakeRunner{}
+	p := newProvider(f, WithPorts(9000, 7180))
+	spec := sandbox.Spec{Ports: []int{8081, 9090}}
+	if _, err := p.Provision(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	run := f.calls[0]
+	if !contains(run, "-p", "9000:7180") || !contains(run, "-p", "8081:8081") || !contains(run, "-p", "9090:9090") {
+		t.Errorf("run args missing merged ports: %v", run)
 	}
 }
 

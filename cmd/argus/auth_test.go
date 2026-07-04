@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +64,77 @@ func TestAuthLogout(t *testing.T) {
 	}
 	if _, err := store.Load(oauth.ProviderKey("xai")); err == nil {
 		t.Error("token should be gone after logout")
+	}
+}
+
+// captureWriter calls fn with each Write's bytes (as a string), then discards
+// them — used to intercept the printed authorize URL without a real terminal
+// or browser.
+type captureWriter struct{ fn func(string) }
+
+func (c captureWriter) Write(p []byte) (int, error) {
+	c.fn(string(p))
+	return len(p), nil
+}
+
+// TestLoginLoopbackExchangeOutlivesWaitDeadline proves the split-deadline fix:
+// the code exchange must be derived from the ORIGINAL (non-shortened) parent
+// context, not from the (short-lived, here) browser-wait context, so a slow
+// human doesn't also starve the exchange.
+func TestLoginLoopbackExchangeOutlivesWaitDeadline(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Slower than waitCtx's budget below — if the exchange incorrectly
+		// inherited waitCtx (or a context derived from it), this response
+		// would arrive too late and the exchange would fail.
+		time.Sleep(300 * time.Millisecond)
+		_ = r.ParseForm()
+		_, _ = w.Write([]byte(`{"access_token":"AT","token_type":"Bearer","expires_in":3600}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := oauth.Config{
+		ClientID:              "cid",
+		AuthorizationEndpoint: "https://auth.example/authorize",
+		TokenEndpoint:         srv.URL,
+	}
+
+	urlCh := make(chan string, 1)
+	out := captureWriter{fn: func(s string) {
+		if i := strings.Index(s, cfg.AuthorizationEndpoint); i >= 0 {
+			select {
+			case urlCh <- strings.TrimSpace(s[i:]):
+			default:
+			}
+		}
+	}}
+
+	// Deliver the loopback callback almost immediately, well within waitCtx's
+	// tight budget, by parsing the authorize URL loginLoopback printed.
+	go func() {
+		raw := <-urlCh
+		u, err := url.Parse(raw)
+		if err != nil {
+			return
+		}
+		redirect := u.Query().Get("redirect_uri")
+		state := u.Query().Get("state")
+		res, err := http.Get(redirect + "?code=code123&state=" + state)
+		if err == nil {
+			res.Body.Close()
+		}
+	}()
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	signalCtx := context.Background() // the "original, non-expired parent"
+
+	tok, err := loginLoopback(waitCtx, signalCtx, out, cfg, true)
+	if err != nil {
+		t.Fatalf("loginLoopback: %v (exchange should have outlived the wait deadline)", err)
+	}
+	if tok.AccessToken != "AT" {
+		t.Errorf("token = %+v, want access_token=AT", tok)
 	}
 }
 

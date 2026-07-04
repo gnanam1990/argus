@@ -39,13 +39,14 @@ type compatPreset struct {
 }
 
 // compatPresets are the OpenAI-compatible providers. Kimi (Moonshot), xAI
-// (Grok), and Ollama all speak the OpenAI Chat Completions API, so they share
-// the compat adapter — only the endpoint and key env differ. All are
-// overridable via base_url.
+// (Grok), Gemini, and Ollama all speak the OpenAI Chat Completions API, so
+// they share the compat adapter — only the endpoint and key env differ. All
+// are overridable via base_url.
 var compatPresets = map[string]compatPreset{
 	"openai": {"https://api.openai.com/v1", "OPENAI_API_KEY"},
 	"kimi":   {"https://api.moonshot.ai/v1", "MOONSHOT_API_KEY"},
 	"xai":    {"https://api.x.ai/v1", "XAI_API_KEY"},
+	"gemini": {"https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"},
 	"ollama": {"http://localhost:11434/v1", "OLLAMA_API_KEY"},
 	"compat": {"", "ARGUS_API_KEY"},
 }
@@ -202,7 +203,10 @@ func BuildMiddleware(cfg config.Config, secrets []string, log *slog.Logger, runI
 	// gate exists it runs report-only and the human decides; unattended runs
 	// fail closed (sensitive untrusted actions are denied outright).
 	mw = append(mw, middleware.NewInjectionGuard(!cfg.Agent.RequireApproval))
-	if cfg.Agent.RequireApproval && approver != nil {
+	if cfg.Agent.RequireApproval {
+		// A nil approver (headless/eval contexts) fails closed inside
+		// NewApproval: requiring approval with nobody to ask denies risky
+		// actions rather than silently dropping the gate.
 		mw = append(mw, middleware.NewApproval(nil, approver))
 	}
 	if cfg.Agent.BudgetTokens > 0 || cfg.Agent.BudgetUSD > 0 {

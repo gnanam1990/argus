@@ -2,8 +2,10 @@ package remote_test
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gnanam1990/argus/internal/driver/remote"
 	"github.com/gnanam1990/argus/internal/guest"
@@ -103,6 +105,33 @@ func TestRemoteAllInputMethods(t *testing.T) {
 		if last, _ := f.Last(); last.Method != s.method {
 			t.Errorf("last method = %s, want %s", last.Method, s.method)
 		}
+	}
+}
+
+// TestRemoteCloseTimesOut checks Close bounds its RPC with its own timeout
+// rather than hanging forever against an unresponsive guest: a raw handler
+// that never answers /cmd must still cause Close to return (with an error)
+// well short of the default HTTP client timeout.
+func TestRemoteCloseTimesOut(t *testing.T) {
+	t.Parallel()
+	block := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cmd", func(w http.ResponseWriter, r *http.Request) {
+		<-block // simulate an unresponsive guest
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(func() { close(block); srv.Close() })
+
+	c := remote.New(srv.URL)
+	start := time.Now()
+	err := c.Close()
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Error("expected a timeout error from an unresponsive guest")
+	}
+	if elapsed > 6*time.Second {
+		t.Errorf("Close took %v, want bounded near its 5s timeout (not the 30s client default)", elapsed)
 	}
 }
 

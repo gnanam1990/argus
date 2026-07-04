@@ -40,6 +40,8 @@ type Marker interface {
 
 // Index maps each element's ID to its box. It is the canonical way to build the
 // set-of-marks index the executor consumes; a Marker returns exactly this.
+// Duplicate IDs are last-writer-wins — run Renumber first so a detector that
+// emits colliding IDs cannot make a drawn label resolve to the wrong box.
 func Index(els []Element) map[int]action.Rect {
 	if len(els) == 0 {
 		return map[int]action.Rect{}
@@ -49,6 +51,33 @@ func Index(els []Element) map[int]action.Rect {
 		m[e.ID] = e.Box
 	}
 	return m
+}
+
+// Renumber returns a copy of els in which every ID is unique: the first
+// occurrence of a non-negative ID keeps it, collisions and negative IDs are
+// reassigned to the next unused non-negative integer. Markers renumber before
+// drawing so the labels shown to the model always match the index clicks
+// resolve against.
+func Renumber(els []Element) []Element {
+	if len(els) == 0 {
+		return els
+	}
+	out := make([]Element, len(els))
+	copy(out, els)
+	used := make(map[int]bool, len(out))
+	next := 0
+	for i := range out {
+		if out[i].ID >= 0 && !used[out[i].ID] {
+			used[out[i].ID] = true
+			continue
+		}
+		for used[next] {
+			next++
+		}
+		out[i].ID = next
+		used[next] = true
+	}
+	return out
 }
 
 // Filter returns the interactable elements whose confidence is >= min,

@@ -54,19 +54,31 @@ func Completed(o *agent.Outcome, err error) bool {
 }
 
 // SessionFactory builds a fresh Session for a task (each session needs its own
-// provider state).
-type SessionFactory func(task Task) agent.Session
+// provider state). A factory error fails that task and the run continues.
+type SessionFactory func(task Task) (agent.Session, error)
 
-// Run executes each task through a fresh session and scores it.
+// Run executes each task through a fresh session and scores it. A task whose
+// session cannot be built (or whose run errors) is recorded as a failure; it
+// never aborts the remaining tasks.
 func Run(ctx context.Context, tasks []Task, factory SessionFactory, score Scorer) Report {
 	var rep Report
 	for _, task := range tasks {
+		sess, ferr := factory(task)
+		if ferr != nil || sess == nil {
+			if ferr == nil {
+				ferr = fmt.Errorf("eval: factory returned no session")
+			}
+			rep.Results = append(rep.Results, Result{Task: task.Name, Error: ferr.Error()})
+			rep.Total++
+			continue
+		}
+
 		tctx := ctx
 		var cancel context.CancelFunc
 		if task.Timeout > 0 {
 			tctx, cancel = context.WithTimeout(ctx, task.Timeout)
 		}
-		out, err := factory(task).Run(tctx, task.Prompt)
+		out, err := sess.Run(tctx, task.Prompt)
 		if cancel != nil {
 			cancel()
 		}
