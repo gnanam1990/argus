@@ -5,6 +5,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -72,7 +73,8 @@ func Defaults() Config {
 }
 
 // Load builds a config from defaults, an optional JSON file, and the
-// environment.
+// environment. Unknown JSON fields are rejected so a typo'd key (e.g. a
+// misspelled require_approval) cannot silently disable a safety setting.
 func Load(path string) (Config, error) {
 	c := Defaults()
 	if path != "" {
@@ -80,16 +82,21 @@ func Load(path string) (Config, error) {
 		if err != nil {
 			return c, fmt.Errorf("config: read %s: %w", path, err)
 		}
-		if err := json.Unmarshal(b, &c); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(b))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&c); err != nil {
 			return c, fmt.Errorf("config: parse %s: %w", path, err)
 		}
 	}
-	applyEnv(&c, os.Getenv)
+	if err := applyEnv(&c, os.Getenv); err != nil {
+		return c, err
+	}
 	return c, nil
 }
 
-// applyEnv overlays ARGUS_* environment overrides.
-func applyEnv(c *Config, getenv func(string) string) {
+// applyEnv overlays ARGUS_* environment overrides. Malformed values are
+// errors, not silently ignored.
+func applyEnv(c *Config, getenv func(string) string) error {
 	if v := getenv("ARGUS_PROVIDER"); v != "" {
 		c.Provider.Kind = v
 	}
@@ -109,10 +116,13 @@ func applyEnv(c *Config, getenv func(string) string) {
 		c.Sandbox.Kind = v
 	}
 	if v := getenv("ARGUS_MAX_STEPS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.Agent.MaxSteps = n
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("config: ARGUS_MAX_STEPS %q is not an integer", v)
 		}
+		c.Agent.MaxSteps = n
 	}
+	return nil
 }
 
 var (
@@ -134,6 +144,12 @@ func (c Config) Validate() error {
 	}
 	if c.Provider.MaxTokens <= 0 {
 		return fmt.Errorf("config: provider.max_tokens must be positive")
+	}
+	if c.Provider.DisplayWidth <= 0 || c.Provider.DisplayHeight <= 0 {
+		return fmt.Errorf("config: provider display dimensions must be positive")
+	}
+	if c.Agent.MaxSteps < 0 {
+		return fmt.Errorf("config: agent.max_steps must be non-negative")
 	}
 	if !groundingModes[c.Grounding.Mode] {
 		return fmt.Errorf("config: unknown grounding mode %q", c.Grounding.Mode)

@@ -32,7 +32,8 @@ type Runner struct {
 	system   string
 	maxSteps int
 
-	conv *model.Conversation
+	conv     *model.Conversation
+	observed bool // at least one screenshot has entered the conversation
 }
 
 // Option configures a Runner.
@@ -59,10 +60,9 @@ func WithMiddleware(mw ...Middleware) Option {
 }
 
 // WithCapabilities enables gated action types on the executor allowlist.
+// Repeated options accumulate.
 func WithCapabilities(types ...action.ActionType) Option {
-	return func(r *Runner) {
-		r.exec = computer.NewExecutor(r.computer, computer.WithCapabilities(types...))
-	}
+	return func(r *Runner) { r.exec.Allow(types...) }
 }
 
 // WithModelOptions sets per-step provider options (temperature/seed/max-tokens).
@@ -100,30 +100,36 @@ func (r *Runner) History() *model.Conversation { return r.conv }
 func (r *Runner) Run(ctx context.Context, task string) (*Outcome, error) {
 	r.conv = &model.Conversation{System: r.system}
 	r.conv.AddUser(model.Text(task))
+	r.observed = false
 
 	st := &State{Task: task}
 	out := &Outcome{Task: task}
+	// fail stamps the outcome so callers can trust Reason on every error path.
+	fail := func(err error) (*Outcome, error) {
+		out.Reason = ReasonError
+		return out, err
+	}
 
 	for _, mw := range r.mw {
 		if err := mw.OnRunStart(ctx, task); err != nil {
-			return out, err
+			return fail(err)
 		}
 	}
 
 	// Initial observation.
 	obs, err := r.observe(ctx)
 	if err != nil {
-		return out, fmt.Errorf("initial observe: %w", err)
+		return fail(fmt.Errorf("initial observe: %w", err))
 	}
 
 	for {
 		if err := ctx.Err(); err != nil {
-			return out, err
+			return fail(err)
 		}
 
 		cont, err := r.gate(ctx, st)
 		if err != nil {
-			return out, err
+			return fail(err)
 		}
 		if !cont {
 			out.Reason = ReasonHalted
@@ -137,33 +143,35 @@ func (r *Runner) Run(ctx context.Context, task string) (*Outcome, error) {
 		// Pre-LLM middleware transforms the request conversation.
 		for _, mw := range r.mw {
 			if err := mw.OnLLMStart(ctx, r.conv); err != nil {
-				return out, err
+				return fail(err)
 			}
 		}
 
 		turn, err := r.provider.Step(ctx, r.conv, r.stepOpts...)
 		if err != nil {
-			out.Reason = "error"
-			return out, fmt.Errorf("provider step: %w", err)
+			return fail(fmt.Errorf("provider step: %w", err))
 		}
+
+		// The provider call happened: account for it before any hook can abort,
+		// so error paths still report truthful step and usage totals.
+		st.Usage = st.Usage.Add(turn.Usage)
+		st.Step++
+		out.Steps = st.Step
+		out.Usage = st.Usage
 
 		for _, mw := range r.mw {
 			if err := mw.OnLLMEnd(ctx, turn); err != nil {
-				return out, err
+				return fail(err)
 			}
 		}
 
-		st.Usage = st.Usage.Add(turn.Usage)
 		for _, mw := range r.mw {
 			if err := mw.OnUsage(ctx, turn.Usage); err != nil {
-				return out, err
+				return fail(err)
 			}
 		}
 
 		r.conv.Add(turn.Message)
-		st.Step++
-		out.Steps = st.Step
-		out.Usage = st.Usage
 		if t := turn.Text(); t != "" {
 			out.FinalText = t
 		}
@@ -178,29 +186,34 @@ func (r *Runner) Run(ctx context.Context, task string) (*Outcome, error) {
 		if !turn.HasActions() {
 			out.Reason = ReasonCompleted
 			if err := r.recorder.Append(step); err != nil {
-				return out, err
+				return fail(err)
 			}
 			break
 		}
 
 		terminated, toolMsg, err := r.act(ctx, turn, &step)
 		if err != nil {
-			return out, err
+			// Keep the evidence: actions before the failure already ran.
+			_ = r.recorder.Append(step)
+			return fail(err)
 		}
 		if err := r.recorder.Append(step); err != nil {
-			return out, err
+			return fail(err)
 		}
+
+		// Always pair the turn's tool uses with their results — including for a
+		// terminating batch, so history never ends on a dangling tool call.
+		r.conv.Add(toolMsg)
+
 		if terminated {
 			out.Reason = ReasonTerminated
 			break
 		}
 
-		r.conv.Add(toolMsg)
-
 		// Re-observe for the next step.
 		obs, err = r.observe(ctx)
 		if err != nil {
-			return out, fmt.Errorf("observe: %w", err)
+			return fail(fmt.Errorf("observe: %w", err))
 		}
 	}
 
@@ -230,6 +243,14 @@ func (r *Runner) act(ctx context.Context, turn *model.Turn, step *trajectory.Ste
 	for _, use := range turn.ActionUses() {
 		a := use.Action
 
+		// Post-observation actions are conservatively untrusted: their values
+		// may derive from attacker-controlled on-screen content, and provenance
+		// cannot be proven. Sensitive-action policy (the injection guard and the
+		// default approval risk policy) keys on this flag.
+		if r.observed {
+			a.Untrusted = true
+		}
+
 		proceed := true
 		for _, mw := range r.mw {
 			ok, err := mw.OnAction(ctx, &a)
@@ -254,13 +275,18 @@ func (r *Runner) act(ctx context.Context, turn *model.Turn, step *trajectory.Ste
 					return false, model.Message{}, err
 				}
 			}
+		} else {
+			// Make denials visible to the model instead of an empty result.
+			res = action.Result{Output: "action denied by policy"}
 		}
 
 		step.Actions = append(step.Actions, a)
 		step.Results = append(step.Results, res)
 		contents = append(contents, model.ActionResult(use.CallID, res))
 		if res.Terminated {
+			// Nothing after a terminate in the same batch may execute.
 			terminated = true
+			break
 		}
 	}
 
@@ -306,6 +332,7 @@ func (r *Runner) observe(ctx context.Context) (action.Image, error) {
 	}
 
 	r.conv.AddUser(model.ImageContent(marked))
+	r.observed = true
 	return img, nil
 }
 

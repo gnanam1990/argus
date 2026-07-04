@@ -55,7 +55,9 @@ func TestApplyEnv(t *testing.T) {
 		"ARGUS_MAX_STEPS": "7",
 		"ARGUS_SANDBOX":   "docker",
 	}
-	applyEnv(&c, func(k string) string { return env[k] })
+	if err := applyEnv(&c, func(k string) string { return env[k] }); err != nil {
+		t.Fatal(err)
+	}
 	if c.Provider.Kind != "openai" || c.Provider.Model != "gpt-5" {
 		t.Errorf("provider = %+v", c.Provider)
 	}

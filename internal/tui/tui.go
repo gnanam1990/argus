@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/gnanam1990/argus/internal/pricing"
+	"github.com/gnanam1990/argus/pkg/agent"
 	"github.com/gnanam1990/argus/pkg/model"
 )
 
@@ -44,6 +45,7 @@ type (
 		Reason    string
 		Steps     int
 		FinalText string
+		Err       string // non-empty when the run failed
 	}
 )
 
@@ -71,6 +73,7 @@ type Model struct {
 	done     bool
 	reason   string
 	final    string
+	errText  string
 
 	cancel context.CancelFunc
 	sp     spinner.Model
@@ -137,9 +140,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case DoneMsg:
 		m.done, m.reason, m.step, m.final = true, msg.Reason, msg.Steps, msg.FinalText
+		m.errText = msg.Err
+		m.thinking = false
 		return m, nil
 
 	case spinner.TickMsg:
+		if m.done {
+			// Stop re-arming the tick so the program idles after the run ends.
+			return m, nil
+		}
 		var cmd tea.Cmd
 		m.sp, cmd = m.sp.Update(msg)
 		return m, cmd
@@ -158,6 +167,16 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pending.Reply <- false
 			m.pending = nil
 			m.push(feedItem{kind: "error", text: "denied"})
+		case "ctrl+c":
+			// Stopping must always work: deny the pending action, cancel the
+			// run, and quit.
+			m.pending.Reply <- false
+			m.pending = nil
+			m.push(feedItem{kind: "error", text: "denied (run cancelled)"})
+			if !m.done && m.cancel != nil {
+				m.cancel()
+			}
+			return m, tea.Quit
 		}
 		return m, nil
 	}
@@ -230,11 +249,24 @@ func (m *Model) View() string {
 		b.WriteString("\n" + warnStyle.Render("⚠ approve "+m.pending.Label+"?  [y/N] ") + "\n")
 	}
 
-	// Footer.
+	// Footer. The glyph tracks the outcome: only a clean completion is green.
 	b.WriteString("\n")
 	switch {
-	case m.done:
+	case m.done && (m.errText != "" || m.reason == agent.ReasonError):
+		b.WriteString(errStyle.Render(fmt.Sprintf("✗ %s in %d steps", m.reason, m.step)))
+		if m.errText != "" {
+			b.WriteString(" — " + truncate(m.errText, m.width-20))
+		}
+		b.WriteString(dimStyle.Render("   (press q)"))
+	case m.done && m.reason == agent.ReasonCompleted:
 		b.WriteString(okStyle.Render(fmt.Sprintf("✔ %s in %d steps", m.reason, m.step)))
+		if m.final != "" {
+			b.WriteString(" — " + truncate(m.final, m.width-20))
+		}
+		b.WriteString(dimStyle.Render("   (press q)"))
+	case m.done:
+		// terminated / max_steps / halted: over, but not a clean completion.
+		b.WriteString(warnStyle.Render(fmt.Sprintf("⚠ %s in %d steps", m.reason, m.step)))
 		if m.final != "" {
 			b.WriteString(" — " + truncate(m.final, m.width-20))
 		}

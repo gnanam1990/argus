@@ -31,16 +31,18 @@ type Outcome struct {
 	Task      string
 	Steps     int
 	Usage     model.Usage
-	Reason    string // completed | terminated | max_steps | halted
+	Reason    string // completed | terminated | max_steps | halted | error
 	FinalText string // last assistant text
 }
 
-// Reason constants for Outcome.Reason.
+// Reason constants for Outcome.Reason. Whenever Run returns a non-nil error the
+// outcome's Reason is ReasonError, so callers can trust Reason on every path.
 const (
 	ReasonCompleted  = "completed"
 	ReasonTerminated = "terminated"
 	ReasonMaxSteps   = "max_steps"
 	ReasonHalted     = "halted"
+	ReasonError      = "error"
 )
 
 // Middleware hooks into the loop. Implementations embed Base and override only

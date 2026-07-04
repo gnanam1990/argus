@@ -49,11 +49,7 @@ type ExecutorOption func(*Executor)
 // WithCapabilities adds gated action types to the allowlist. Only gated types
 // are meaningful here; non-gated actions are always permitted.
 func WithCapabilities(types ...action.ActionType) ExecutorOption {
-	return func(e *Executor) {
-		for _, t := range types {
-			e.allow[t] = true
-		}
-	}
+	return func(e *Executor) { e.Allow(types...) }
 }
 
 // NewExecutor builds an executor over c with identity scale and an empty
@@ -69,6 +65,13 @@ func NewExecutor(c Computer, opts ...ExecutorOption) *Executor {
 		opt(e)
 	}
 	return e
+}
+
+// Allow adds gated action types to the allowlist. Grants accumulate.
+func (e *Executor) Allow(types ...action.ActionType) {
+	for _, t := range types {
+		e.allow[t] = true
+	}
 }
 
 // SetScale sets the per-axis model→screen multipliers. The loop computes these
@@ -174,10 +177,32 @@ func (e *Executor) Execute(ctx context.Context, a action.Action) (action.Result,
 	case action.Terminate:
 		return action.Result{Terminated: true}, nil
 
+	case action.RunCommand:
+		c, ok := e.c.(Commander)
+		if !ok {
+			return action.Result{}, fmt.Errorf("%w: %s", ErrUnsupported, a.Type)
+		}
+		out, err := c.RunCommand(ctx, a.Text)
+		if err != nil {
+			return action.Result{}, err
+		}
+		return action.Result{Output: out}, nil
+
+	case action.ReadFile:
+		f, ok := e.c.(FileReader)
+		if !ok {
+			return action.Result{}, fmt.Errorf("%w: %s", ErrUnsupported, a.Type)
+		}
+		b, err := f.ReadFile(ctx, a.Text)
+		if err != nil {
+			return action.Result{}, err
+		}
+		return action.Result{Output: string(b)}, nil
+
 	default:
-		// Gated system/window actions (run_command, read_file, write_file,
-		// window_focus, window_move) need a Sandbox or window manager the bare
-		// Computer does not provide.
+		// write_file (the action schema has no content field yet) and the
+		// window actions (window_focus, window_move) need a window manager the
+		// Computer seam does not provide.
 		return action.Result{}, fmt.Errorf("%w: %s", ErrUnsupported, a.Type)
 	}
 }

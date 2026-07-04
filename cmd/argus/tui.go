@@ -53,11 +53,14 @@ func runTUI(
 		defer close(done)
 		outcome, runErr = r.Run(runCtx, task)
 		dm := tui.DoneMsg{}
-		switch {
-		case outcome != nil:
+		if outcome != nil {
 			dm.Reason, dm.Steps, dm.FinalText = outcome.Reason, outcome.Steps, outcome.FinalText
-		case runErr != nil:
-			dm.Reason = "error: " + runErr.Error()
+		}
+		if runErr != nil {
+			if dm.Reason == "" {
+				dm.Reason = agent.ReasonError
+			}
+			dm.Err = runErr.Error()
 		}
 		prog.Send(dm)
 	}()

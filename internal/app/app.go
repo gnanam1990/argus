@@ -190,7 +190,10 @@ func BuildMiddleware(cfg config.Config, secrets []string, log *slog.Logger, runI
 	if cfg.Agent.RetainImages > 0 {
 		mw = append(mw, middleware.NewImageRetention(cfg.Agent.RetainImages))
 	}
-	mw = append(mw, middleware.NewInjectionGuard(true))
+	// Injection-guard strictness pairs with approval: when a human approval
+	// gate exists it runs report-only and the human decides; unattended runs
+	// fail closed (sensitive untrusted actions are denied outright).
+	mw = append(mw, middleware.NewInjectionGuard(!cfg.Agent.RequireApproval))
 	if cfg.Agent.RequireApproval && approver != nil {
 		mw = append(mw, middleware.NewApproval(nil, approver))
 	}
@@ -209,7 +212,10 @@ func BuildMiddleware(cfg config.Config, secrets []string, log *slog.Logger, runI
 
 // BuildComputer provisions the computer for the configured sandbox. For "host"
 // it returns the local shell driver; for "docker" it provisions a container.
-// The returned cleanup stops the sandbox.
+// The returned computer also exposes the sandbox's gated exec/file operations
+// through the pkg/computer optional interfaces, so allowlisted run_command /
+// read_file actions can actually execute. The returned cleanup stops the
+// sandbox.
 func BuildComputer(ctx context.Context, cfg config.Config, getenv func(string) string) (computer.Computer, func() error, error) {
 	switch cfg.Sandbox.Kind {
 	case "host":
@@ -217,7 +223,7 @@ func BuildComputer(ctx context.Context, cfg config.Config, getenv func(string) s
 		if err != nil {
 			return nil, nil, err
 		}
-		return sb.Computer(), func() error { return sb.Stop(context.Background()) }, nil
+		return newSandboxComputer(sb), func() error { return sb.Stop(context.Background()) }, nil
 	case "docker":
 		opts := []docker.Option{
 			docker.WithImage(cfg.Sandbox.Image),
@@ -230,10 +236,51 @@ func BuildComputer(ctx context.Context, cfg config.Config, getenv func(string) s
 		if err != nil {
 			return nil, nil, err
 		}
-		return sb.Computer(), func() error { return sb.Stop(context.Background()) }, nil
+		return newSandboxComputer(sb), func() error { return sb.Stop(context.Background()) }, nil
 	default:
 		return nil, nil, fmt.Errorf("app: unknown sandbox %q", cfg.Sandbox.Kind)
 	}
+}
+
+// sandboxComputer bridges a sandbox's gated exec/file operations onto its
+// computer, satisfying the pkg/computer Commander/FileReader/FileWriter
+// optional interfaces the executor dispatches gated actions through.
+type sandboxComputer struct {
+	computer.Computer
+	sb sandbox.Sandbox
+}
+
+func newSandboxComputer(sb sandbox.Sandbox) sandboxComputer {
+	return sandboxComputer{Computer: sb.Computer(), sb: sb}
+}
+
+// RunCommand implements computer.Commander over the sandbox's Exec.
+func (s sandboxComputer) RunCommand(ctx context.Context, cmd string) (string, error) {
+	res, err := s.sb.Exec(ctx, cmd, 0)
+	if err != nil {
+		return "", err
+	}
+	out := res.Stdout
+	if res.Stderr != "" {
+		if out != "" {
+			out += "\n"
+		}
+		out += res.Stderr
+	}
+	if res.ExitCode != 0 {
+		out = fmt.Sprintf("%s\n[exit code %d]", out, res.ExitCode)
+	}
+	return out, nil
+}
+
+// ReadFile implements computer.FileReader over the sandbox.
+func (s sandboxComputer) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	return s.sb.ReadFile(ctx, path)
+}
+
+// WriteFile implements computer.FileWriter over the sandbox.
+func (s sandboxComputer) WriteFile(ctx context.Context, path string, data []byte) error {
+	return s.sb.WriteFile(ctx, path, data)
 }
 
 // NewRunner composes a Runner from the built parts.
