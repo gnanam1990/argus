@@ -26,13 +26,14 @@ type TokenSource func(ctx context.Context) (access, account string, err error)
 
 // Provider is the ChatGPT/Codex adapter. One instance drives one session.
 type Provider struct {
-	mu        sync.Mutex
-	http      *http.Client
-	baseURL   string
-	modelID   string
-	reasoning string
-	token     TokenSource
-	force     TokenSource // force-refresh on a hard 401 (optional)
+	mu             sync.Mutex
+	http           *http.Client
+	baseURL        string
+	modelID        string
+	reasoning      string
+	token          TokenSource
+	force          TokenSource // force-refresh on a hard 401 (optional)
+	imageRetention int
 
 	input   []any
 	encoded int
@@ -59,6 +60,12 @@ func WithTokenSource(fn TokenSource) Option { return func(p *Provider) { p.token
 // WithForceRefresh injects the force-refresh used on a hard 401.
 func WithForceRefresh(fn TokenSource) Option { return func(p *Provider) { p.force = fn } }
 
+// WithImageRetention bounds the private wire history to the newest n
+// screenshots; older ones are replaced with a text placeholder (see
+// pruneImages). n <= 0 (the default) keeps every screenshot ever taken,
+// preserving prior behavior.
+func WithImageRetention(n int) Option { return func(p *Provider) { p.imageRetention = n } }
+
 // New builds a Codex provider.
 func New(opts ...Option) *Provider {
 	p := &Provider{http: http.DefaultClient, baseURL: defaultBaseURL, modelID: "gpt-5.5"}
@@ -82,6 +89,7 @@ func (p *Provider) Step(ctx context.Context, conv *model.Conversation, opts ...m
 	defer p.mu.Unlock()
 
 	p.encodeNew(conv)
+	p.pruneImages()
 
 	// NOTE: the ChatGPT Codex backend rejects max_output_tokens
 	// ("Unsupported parameter"), unlike the API-key Responses endpoint, so the
@@ -170,6 +178,67 @@ func (p *Provider) encodeNew(conv *model.Conversation) {
 		}
 	}
 	p.encoded = len(conv.Messages)
+}
+
+// prunedImagePlaceholder replaces a pruned screenshot's content part.
+const prunedImagePlaceholder = "[screenshot pruned]"
+
+// pruneImages replaces all but the newest imageRetention input_image parts in
+// the private history with a small input_text placeholder, oldest first, so
+// the request about to be built from p.input stays bounded instead of
+// resending every screenshot ever taken (it runs right after encodeNew,
+// before the request is constructed). Only "message"/"user" items are
+// scanned: function_call and function_call_output items never carry images,
+// so call_id pairing and item counts are unaffected. imageRetention <= 0
+// keeps everything (default; preserves prior behavior).
+func (p *Provider) pruneImages() {
+	if p.imageRetention <= 0 {
+		return
+	}
+	total := 0
+	for _, it := range p.input {
+		item, ok := it.(map[string]any)
+		if !ok || item["type"] != "message" || item["role"] != "user" {
+			continue
+		}
+		content, ok := item["content"].([]map[string]any)
+		if !ok {
+			continue
+		}
+		for _, part := range content {
+			if part["type"] == "input_image" {
+				total++
+			}
+		}
+	}
+	drop := total - p.imageRetention
+	if drop <= 0 {
+		return
+	}
+	pruned := 0
+	for _, it := range p.input {
+		if pruned >= drop {
+			break
+		}
+		item, ok := it.(map[string]any)
+		if !ok || item["type"] != "message" || item["role"] != "user" {
+			continue
+		}
+		content, ok := item["content"].([]map[string]any)
+		if !ok {
+			continue
+		}
+		for j, part := range content {
+			if pruned >= drop {
+				break
+			}
+			if part["type"] != "input_image" {
+				continue
+			}
+			content[j] = map[string]any{"type": "input_text", "text": prunedImagePlaceholder}
+			pruned++
+		}
+	}
 }
 
 func inputContent(content []model.Content) []map[string]any {

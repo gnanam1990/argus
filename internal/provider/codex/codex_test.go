@@ -2,6 +2,7 @@ package codex_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -170,5 +171,154 @@ func TestCapabilities(t *testing.T) {
 	caps := codex.New().Capabilities()
 	if caps.NativeComputerUse || !caps.Vision {
 		t.Errorf("caps = %+v", caps)
+	}
+}
+
+// sequentialServer returns the given SSE bodies in order (repeating the last
+// for any extra requests) and records each request body, mirroring the
+// compat/anthropic packages' captureServer helpers.
+func sequentialServer(t *testing.T, responses ...string) (*httptest.Server, *[]string) {
+	t.Helper()
+	var bodies []string
+	i := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		resp := responses[len(responses)-1]
+		if i < len(responses) {
+			resp = responses[i]
+		}
+		i++
+		_, _ = io.WriteString(w, resp)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &bodies
+}
+
+// toolCallSSE builds a one-turn SSE stream emitting a single "computer"
+// function_call with distinct item/call ids, so a multi-turn script can be
+// scripted deterministically.
+func toolCallSSE(itemID, callID string) string {
+	return sse(
+		`{"type":"response.output_item.added","item_id":"`+itemID+`","item":{"type":"function_call","call_id":"`+callID+`","name":"computer"}}`,
+		`{"type":"response.function_call_arguments.delta","item_id":"`+itemID+`","delta":"{\"action\":\"click\",\"x\":10,\"y\":20}"}`,
+		`{"type":"response.output_item.done","item_id":"`+itemID+`"}`,
+		completedUsage,
+	)
+}
+
+// stepScreenshotScript drives 4 Steps, each adding one screenshot observation,
+// wiring each turn's function_call through a matching function_call_output
+// before the next step — mirroring how the agent loop actually drives a
+// provider.
+func stepScreenshotScript(t *testing.T, p *codex.Provider) {
+	t.Helper()
+	conv := &model.Conversation{}
+	conv.AddUser(model.Text("start"))
+	conv.AddUser(model.ImageContent(action.Image{MIME: action.MIMEPNG, Data: []byte{1}}))
+
+	for i := 0; i < 4; i++ {
+		turn, err := p.Step(context.Background(), conv)
+		if err != nil {
+			t.Fatalf("Step %d: %v", i+1, err)
+		}
+		conv.Add(turn.Message)
+		conv.AddTool(model.ActionResult(turn.ActionUses()[0].CallID, action.Result{Output: "done"}))
+		if i < 3 {
+			conv.AddUser(model.ImageContent(action.Image{MIME: action.MIMEPNG, Data: []byte{byte(i + 2)}}))
+		}
+	}
+}
+
+// codexReqItem is the subset of a decoded Responses "input" item this file's
+// retention tests need.
+type codexReqItem struct {
+	Type    string `json:"type"`
+	Role    string `json:"role,omitempty"`
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text,omitempty"`
+	} `json:"content,omitempty"`
+}
+
+type codexReqBody struct {
+	Input []codexReqItem `json:"input"`
+}
+
+func decodeCodexRequest(t *testing.T, body string) codexReqBody {
+	t.Helper()
+	var req codexReqBody
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("decode request body: %v\n%s", err, body)
+	}
+	return req
+}
+
+// countCodexImages returns the number of live "input_image" parts and the
+// number of "input_text" parts carrying the pruned-screenshot placeholder,
+// across "message"/"user" input items (function_call/function_call_output
+// items never carry images).
+func countCodexImages(req codexReqBody) (live, pruned int) {
+	for _, item := range req.Input {
+		if item.Type != "message" || item.Role != "user" {
+			continue
+		}
+		for _, part := range item.Content {
+			switch {
+			case part.Type == "input_image":
+				live++
+			case part.Type == "input_text" && part.Text == wantPrunedText:
+				pruned++
+			}
+		}
+	}
+	return live, pruned
+}
+
+// wantPrunedText mirrors the unexported placeholder text the production code
+// emits. It is duplicated here (rather than exported) because this is an
+// external (_test) package, and the exact wire text is itself part of the
+// adapter's contract under test.
+const wantPrunedText = "[screenshot pruned]"
+
+func TestImageRetentionPrunesOldScreenshots(t *testing.T) {
+	t.Parallel()
+	srv, bodies := sequentialServer(t,
+		toolCallSSE("i1", "call_1"), toolCallSSE("i2", "call_2"),
+		toolCallSSE("i3", "call_3"), toolCallSSE("i4", "call_4"),
+	)
+	p := codex.New(codex.WithBaseURL(srv.URL), codex.WithTokenSource(staticToken("AT", "ACCT")), codex.WithImageRetention(2))
+	stepScreenshotScript(t, p)
+
+	if len(*bodies) != 4 {
+		t.Fatalf("requests = %d, want 4", len(*bodies))
+	}
+	req := decodeCodexRequest(t, (*bodies)[3])
+
+	live, pruned := countCodexImages(req)
+	if live != 2 {
+		t.Errorf("live images in 4th request = %d, want 2", live)
+	}
+	if pruned != 2 {
+		t.Errorf("pruned placeholders in 4th request = %d, want 2", pruned)
+	}
+}
+
+func TestImageRetentionZeroKeepsAll(t *testing.T) {
+	t.Parallel()
+	srv, bodies := sequentialServer(t,
+		toolCallSSE("i1", "call_1"), toolCallSSE("i2", "call_2"),
+		toolCallSSE("i3", "call_3"), toolCallSSE("i4", "call_4"),
+	)
+	p := codex.New(codex.WithBaseURL(srv.URL), codex.WithTokenSource(staticToken("AT", "ACCT")), codex.WithImageRetention(0))
+	stepScreenshotScript(t, p)
+
+	req := decodeCodexRequest(t, (*bodies)[3])
+	live, pruned := countCodexImages(req)
+	if live != 4 {
+		t.Errorf("live images in 4th request = %d, want 4 (retention disabled)", live)
+	}
+	if pruned != 0 {
+		t.Errorf("pruned placeholders in 4th request = %d, want 0", pruned)
 	}
 }

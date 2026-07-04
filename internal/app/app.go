@@ -82,6 +82,7 @@ func BuildProviderWithAuth(ctx context.Context, cfg config.Config, getenv func(s
 			codex.WithModel(model),
 			codex.WithTokenSource(tokenFn),
 			codex.WithForceRefresh(forceFn),
+			codex.WithImageRetention(cfg.Agent.RetainImages),
 		}
 		if cfg.Provider.BaseURL != "" {
 			opts = append(opts, codex.WithBaseURL(cfg.Provider.BaseURL))
@@ -90,11 +91,16 @@ func BuildProviderWithAuth(ctx context.Context, cfg config.Config, getenv func(s
 
 	case "xai":
 		// Prefer an API key; fall back to an OAuth Bearer from the Manager.
+		// Without either, fail fast with the remedy instead of building an
+		// unauthenticated client that 401s mid-run.
 		if getenv("XAI_API_KEY") == "" && mgr != nil {
-			if tok, err := mgr.GetFresh(ctx, "xai"); err == nil {
-				return compat.New(compat.WithBaseURL("https://api.x.ai/v1"),
-					compat.WithAPIKey(tok), compat.WithModel(cfg.Provider.Model), compat.WithMaxTokens(cfg.Provider.MaxTokens)), nil
+			tok, err := mgr.GetFresh(ctx, "xai")
+			if err != nil {
+				return nil, fmt.Errorf("app: no usable xai credentials (%w); set XAI_API_KEY or run \"argus auth login xai\"", err)
 			}
+			return compat.New(compat.WithBaseURL("https://api.x.ai/v1"),
+				compat.WithAPIKey(tok), compat.WithModel(cfg.Provider.Model), compat.WithMaxTokens(cfg.Provider.MaxTokens),
+				compat.WithImageRetention(cfg.Agent.RetainImages)), nil
 		}
 	}
 	return BuildProvider(cfg, getenv)
@@ -141,6 +147,7 @@ func BuildProvider(cfg config.Config, getenv func(string) string) (model.Provide
 			anthropic.WithMaxTokens(p.MaxTokens),
 			anthropic.WithDisplaySize(p.DisplayWidth, p.DisplayHeight),
 			anthropic.WithClientOptions(copts...),
+			anthropic.WithImageRetention(cfg.Agent.RetainImages),
 		), nil
 	}
 
@@ -160,6 +167,7 @@ func BuildProvider(cfg config.Config, getenv func(string) string) (model.Provide
 		compat.WithAPIKey(key),
 		compat.WithModel(p.Model),
 		compat.WithMaxTokens(p.MaxTokens),
+		compat.WithImageRetention(cfg.Agent.RetainImages),
 	), nil
 }
 

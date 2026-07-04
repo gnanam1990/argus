@@ -25,12 +25,13 @@ import (
 
 // Provider is the OpenAI-compatible adapter. One instance drives one session.
 type Provider struct {
-	mu        sync.Mutex
-	http      *http.Client
-	baseURL   string
-	apiKey    string
-	modelID   string
-	maxTokens int
+	mu             sync.Mutex
+	http           *http.Client
+	baseURL        string
+	apiKey         string
+	modelID        string
+	maxTokens      int
+	imageRetention int
 
 	messages []chatMessage
 	encoded  int
@@ -53,6 +54,12 @@ func WithMaxTokens(n int) Option { return func(p *Provider) { p.maxTokens = n } 
 
 // WithHTTPClient overrides the HTTP client.
 func WithHTTPClient(c *http.Client) Option { return func(p *Provider) { p.http = c } }
+
+// WithImageRetention bounds the private wire history to the newest n
+// screenshots; older ones are replaced with a text placeholder (see
+// pruneImages). n <= 0 (the default) keeps every screenshot ever taken,
+// preserving prior behavior.
+func WithImageRetention(n int) Option { return func(p *Provider) { p.imageRetention = n } }
 
 // New builds an OpenAI-compatible provider.
 func New(opts ...Option) *Provider {
@@ -83,6 +90,7 @@ func (p *Provider) Step(ctx context.Context, conv *model.Conversation, opts ...m
 	defer p.mu.Unlock()
 
 	p.encodeNew(conv)
+	p.pruneImages()
 
 	cfg := model.ApplyOptions(opts...)
 	maxTok := p.maxTokens
@@ -140,6 +148,67 @@ func (p *Provider) encodeNew(conv *model.Conversation) {
 	// Ensure a leading system message reflects conv.System.
 	if conv.System != "" && (len(p.messages) == 0 || p.messages[0].Role != "system") {
 		p.messages = append([]chatMessage{{Role: "system", Content: conv.System}}, p.messages...)
+	}
+}
+
+// prunedImagePlaceholder replaces a pruned screenshot's content part.
+const prunedImagePlaceholder = "[screenshot pruned]"
+
+// pruneImages replaces all but the newest imageRetention image_url content
+// parts in the private history with a small text placeholder, oldest first,
+// so the request about to be built from p.messages stays bounded instead of
+// resending every screenshot ever taken (it runs right after encodeNew,
+// before the request is constructed). Only user messages carry a
+// []contentPart content ([]contentPart is exactly what userParts produces):
+// system/tool messages are plain strings and assistant messages are echoed
+// verbatim from the API response, so tool_call_id pairing and message counts
+// are unaffected. imageRetention <= 0 keeps everything (default; preserves
+// prior behavior).
+func (p *Provider) pruneImages() {
+	if p.imageRetention <= 0 {
+		return
+	}
+	total := 0
+	for _, m := range p.messages {
+		if m.Role != "user" {
+			continue
+		}
+		parts, ok := m.Content.([]contentPart)
+		if !ok {
+			continue
+		}
+		for _, part := range parts {
+			if part.Type == "image_url" {
+				total++
+			}
+		}
+	}
+	drop := total - p.imageRetention
+	if drop <= 0 {
+		return
+	}
+	pruned := 0
+	for i := range p.messages {
+		if pruned >= drop {
+			break
+		}
+		if p.messages[i].Role != "user" {
+			continue
+		}
+		parts, ok := p.messages[i].Content.([]contentPart)
+		if !ok {
+			continue
+		}
+		for j := range parts {
+			if pruned >= drop {
+				break
+			}
+			if parts[j].Type != "image_url" {
+				continue
+			}
+			parts[j] = contentPart{Type: "text", Text: prunedImagePlaceholder}
+			pruned++
+		}
 	}
 }
 

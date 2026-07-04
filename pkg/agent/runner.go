@@ -304,10 +304,22 @@ func (r *Runner) observe(ctx context.Context) (action.Image, error) {
 	}
 
 	// Scale ownership lives here: map model/screenshot space to screen space.
-	if sw, sh, serr := r.computer.ScreenSize(ctx); serr == nil {
-		if iw, ih, ok := decodeSize(img); ok && iw > 0 && ih > 0 {
+	// Both failure modes must be loud: silently keeping a stale or identity
+	// scale is exactly how a Retina display or an unexpected resolution turns
+	// into a systematic misclick while the run still reports success (H6).
+	sw, sh, err := r.computer.ScreenSize(ctx)
+	if err != nil {
+		return action.Image{}, fmt.Errorf("screen size: %w", err)
+	}
+	if iw, ih, ok := decodeSize(img); ok {
+		if iw > 0 && ih > 0 {
 			r.exec.SetScale(float64(sw)/float64(iw), float64(sh)/float64(ih))
 		}
+	} else if len(img.Data) > 0 {
+		// A non-empty screenshot that fails to decode means the scale cannot
+		// be trusted at all; an explicitly empty screenshot (no bytes) has
+		// nothing to size from and is left to keep whatever scale is current.
+		return action.Image{}, fmt.Errorf("screenshot undecodable: cannot compute scale")
 	}
 
 	marked := img

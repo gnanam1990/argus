@@ -1,8 +1,10 @@
 package fake
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"image"
 	"testing"
 
 	"github.com/gnanam1990/argus/pkg/action"
@@ -74,6 +76,44 @@ func TestWithErrorPropagates(t *testing.T) {
 	}
 	if _, _, err := f.ScreenSize(ctx); !errors.Is(err, boom) {
 		t.Errorf("ScreenSize err = %v", err)
+	}
+}
+
+// WithScreenSizeError must fail only ScreenSize, leaving Screenshot (and
+// every other method) unaffected — this isolation is what lets a caller
+// exercise agent.Runner.observe's scale-computation error path (H6)
+// independently of screenshot capture.
+func TestWithScreenSizeErrorIsolated(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("no display")
+	f := New().WithScreenSizeError(boom)
+	ctx := context.Background()
+
+	if _, _, err := f.ScreenSize(ctx); !errors.Is(err, boom) {
+		t.Errorf("ScreenSize err = %v, want %v", err, boom)
+	}
+	if _, err := f.Screenshot(ctx); err != nil {
+		t.Errorf("Screenshot err = %v, want nil (only ScreenSize should fail)", err)
+	}
+}
+
+// The default screenshot must actually decode (unlike a hand-rolled magic-
+// number-only fixture): agent.Runner.observe uses image.DecodeConfig to size
+// it for scale computation, and a bare New() must yield identity scale
+// (100x100 image over a 100x100 screen) for every caller that doesn't
+// override the screenshot.
+func TestDefaultScreenshotDecodable(t *testing.T) {
+	t.Parallel()
+	img, err := New().Screenshot(context.Background())
+	if err != nil {
+		t.Fatalf("Screenshot: %v", err)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(img.Data))
+	if err != nil {
+		t.Fatalf("default screenshot does not decode: %v", err)
+	}
+	if cfg.Width != 100 || cfg.Height != 100 {
+		t.Errorf("default screenshot size = %dx%d, want 100x100", cfg.Width, cfg.Height)
 	}
 }
 

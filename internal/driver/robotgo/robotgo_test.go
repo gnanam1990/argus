@@ -1,0 +1,152 @@
+//go:build robotgo
+
+package robotgo
+
+import "testing"
+
+// TestScrollArgsNegatesBothAxes locks in H1: robotgo.Scroll runs the opposite
+// sign convention from our canonical DX/DY (positive DY down, positive DX
+// right), on both axes, so scrollArgs must negate both.
+func TestScrollArgsNegatesBothAxes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		dx, dy       int
+		wantX, wantY int
+	}{
+		{0, 5, 0, -5},  // canonical down  -> robotgo negative y
+		{0, -5, 0, 5},  // canonical up    -> robotgo positive y
+		{5, 0, -5, 0},  // canonical right -> robotgo negative x
+		{-5, 0, 5, 0},  // canonical left  -> robotgo positive x
+		{3, 4, -3, -4}, // both axes at once
+		{0, 0, 0, 0},   // no-op
+	}
+	for _, c := range cases {
+		x, y := scrollArgs(c.dx, c.dy)
+		if x != c.wantX || y != c.wantY {
+			t.Errorf("scrollArgs(%d,%d) = (%d,%d), want (%d,%d)", c.dx, c.dy, x, y, c.wantX, c.wantY)
+		}
+	}
+}
+
+// TestTranslateKeyAliases covers the H2 alias set: win/meta collapse to
+// robotgo's own "cmd" (which already resolves to the correct per-OS meta key
+// internally), option/opt collapse to "alt", and return folds to "enter"
+// since robotgo has no "return" entry at all. Aliases are matched
+// case-insensitively.
+func TestTranslateKeyAliases(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ in, want string }{
+		{"win", "cmd"},
+		{"WIN", "cmd"},
+		{"Win", "cmd"},
+		{"meta", "cmd"},
+		{"META", "cmd"},
+		{"option", "alt"},
+		{"opt", "alt"},
+		{"OPT", "alt"},
+		{"return", "enter"},
+		{"Return", "enter"},
+	}
+	for _, c := range cases {
+		got, err := translateKey(c.in)
+		if err != nil {
+			t.Errorf("translateKey(%q) unexpected error: %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("translateKey(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestTranslateKeyKnownNamesPassThrough covers names already present in
+// robotgo v1.0.2's keyNames map (key.go:209-326): they must pass through
+// (lowercased) rather than being rejected.
+func TestTranslateKeyKnownNamesPassThrough(t *testing.T) {
+	t.Parallel()
+	names := []string{
+		"enter", "esc", "escape", "tab", "space", "backspace", "delete",
+		"up", "down", "left", "right", "home", "end", "pageup", "pagedown",
+		"cmd", "alt", "ctrl", "shift", "control", "f1", "f12",
+	}
+	for _, k := range names {
+		got, err := translateKey(k)
+		if err != nil {
+			t.Errorf("translateKey(%q) unexpected error: %v", k, err)
+			continue
+		}
+		if got != k {
+			t.Errorf("translateKey(%q) = %q, want unchanged %q", k, got, k)
+		}
+	}
+	// Case-insensitive passthrough still normalizes to robotgo's (lowercase)
+	// spelling, since checkKeyCodes does an exact, case-sensitive map lookup.
+	if got, err := translateKey("ENTER"); err != nil || got != "enter" {
+		t.Errorf(`translateKey("ENTER") = %q, %v, want "enter", nil`, got, err)
+	}
+}
+
+// TestTranslateKeySingleCharPassesThroughUnchanged covers robotgo's other
+// valid-key path (keyCodeForChar), which is case-sensitive — "a" and "A" are
+// different keys (shift is implied by case) — so single characters must
+// never be lowercased or otherwise altered.
+func TestTranslateKeySingleCharPassesThroughUnchanged(t *testing.T) {
+	t.Parallel()
+	for _, k := range []string{"a", "A", "1", "!", "Z"} {
+		got, err := translateKey(k)
+		if err != nil {
+			t.Errorf("translateKey(%q) unexpected error: %v", k, err)
+			continue
+		}
+		if got != k {
+			t.Errorf("translateKey(%q) = %q, want unchanged %q", k, got, k)
+		}
+	}
+}
+
+// TestTranslateKeyUnknownErrors is the core H2 regression: a name that is
+// neither a known alias, a single character, nor a robotgo keyNames member
+// must be a hard error, never a silent fallthrough to keycode 0 (kVK_ANSI_A,
+// i.e. "a", on macOS).
+func TestTranslateKeyUnknownErrors(t *testing.T) {
+	t.Parallel()
+	for _, k := range []string{"super", "hyper", "bogus", "windows", "commandkey", ""} {
+		got, err := translateKey(k)
+		if err == nil {
+			t.Errorf("translateKey(%q) = %q, nil error; want an unknown-key error", k, got)
+		}
+	}
+}
+
+// TestTranslateKeysAppliesAcrossTheWholeChord ensures every element of a
+// chord is translated, not just the trailing "key" position — a modifier
+// like "win" is just as capable of silently misbehaving as the primary key.
+func TestTranslateKeysAppliesAcrossTheWholeChord(t *testing.T) {
+	t.Parallel()
+	got, err := translateKeys([]string{"win", "shift", "s"})
+	if err != nil {
+		t.Fatalf("translateKeys: %v", err)
+	}
+	want := []string{"cmd", "shift", "s"}
+	if len(got) != len(want) {
+		t.Fatalf("translateKeys = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("translateKeys[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestTranslateKeysPropagatesFirstError ensures an unknown key anywhere in
+// the chord — including a modifier position — fails the whole chord instead
+// of silently proceeding with a partially-translated set.
+func TestTranslateKeysPropagatesFirstError(t *testing.T) {
+	t.Parallel()
+	if _, err := translateKeys([]string{"ctrl", "nonsense"}); err == nil {
+		t.Error("expected an error for an unknown key in the chord")
+	}
+	if _, err := translateKeys([]string{"nonsense", "a"}); err == nil {
+		t.Error("expected an error for an unknown modifier in the chord")
+	}
+}

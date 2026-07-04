@@ -4,7 +4,10 @@
 package fake
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/png"
 	"sync"
 
 	"github.com/gnanam1990/argus/pkg/action"
@@ -27,24 +30,40 @@ type Call struct {
 // Computer is a recording, concurrency-safe fake driver. The zero value is not
 // usable; construct with New.
 type Computer struct {
-	mu         sync.Mutex
-	screenshot action.Image
-	w, h       int
-	cursor     action.Point
-	err        error
-	calls      []Call
-	closed     bool
+	mu            sync.Mutex
+	screenshot    action.Image
+	w, h          int
+	cursor        action.Point
+	err           error
+	screenSizeErr error
+	calls         []Call
+	closed        bool
 }
 
 var _ computer.Computer = (*Computer)(nil)
 
-// New returns a fake with a 1x1 PNG screenshot and a 100x100 screen.
+// New returns a fake with a decodable 100x100 PNG screenshot and a matching
+// 100x100 screen (identity scale), so callers that don't care about scaling
+// (most of the suite) never have to think about it, while still exercising
+// the real image-decode path agent.Runner.observe relies on to compute scale.
 func New() *Computer {
 	return &Computer{
-		screenshot: action.Image{MIME: action.MIMEPNG, Data: []byte{0x89, 'P', 'N', 'G'}},
+		screenshot: action.Image{MIME: action.MIMEPNG, Data: blankPNG(100, 100)},
 		w:          100,
 		h:          100,
 	}
+}
+
+// blankPNG encodes a real, decodable w×h PNG. Unlike a hand-rolled byte
+// fixture (e.g. just the magic-number prefix), this always round-trips
+// through image.DecodeConfig, which is what observe() uses to size the
+// screenshot for scale computation.
+func blankPNG(w, h int) []byte {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, w, h))); err != nil {
+		panic("computer/fake: encode default screenshot: " + err.Error())
+	}
+	return buf.Bytes()
 }
 
 // WithScreenshot sets the image and screen size returned by observations.
@@ -62,6 +81,15 @@ func (f *Computer) WithCursor(x, y int) *Computer {
 // WithError makes every method return err, for exercising error paths.
 func (f *Computer) WithError(err error) *Computer {
 	f.err = err
+	return f
+}
+
+// WithScreenSizeError makes only ScreenSize return err, while every other
+// method (notably Screenshot) still succeeds. Unlike WithError's blanket
+// failure, this isolates observe()'s scale-computation error path (H6) from
+// screenshot capture.
+func (f *Computer) WithScreenSizeError(err error) *Computer {
+	f.screenSizeErr = err
 	return f
 }
 
@@ -84,6 +112,9 @@ func (f *Computer) Screenshot(context.Context) (action.Image, error) {
 func (f *Computer) ScreenSize(context.Context) (int, int, error) {
 	if err := f.record(Call{Method: "ScreenSize"}); err != nil {
 		return 0, 0, err
+	}
+	if f.screenSizeErr != nil {
+		return 0, 0, f.screenSizeErr
 	}
 	return f.w, f.h, nil
 }

@@ -36,13 +36,14 @@ const (
 // Provider is the Anthropic model.Provider adapter. One instance drives one
 // session (it holds that session's SDK-native history).
 type Provider struct {
-	mu         sync.Mutex
-	client     sdk.Client
-	clientOpts []option.RequestOption
-	modelID    sdk.Model
-	maxTokens  int
-	displayW   int
-	displayH   int
+	mu             sync.Mutex
+	client         sdk.Client
+	clientOpts     []option.RequestOption
+	modelID        sdk.Model
+	maxTokens      int
+	displayW       int
+	displayH       int
+	imageRetention int
 
 	messages []sdk.BetaMessageParam
 	encoded  int // count of neutral messages already reflected in `messages`
@@ -67,6 +68,12 @@ func WithDisplaySize(w, h int) Option {
 func WithClientOptions(opts ...option.RequestOption) Option {
 	return func(p *Provider) { p.clientOpts = append(p.clientOpts, opts...) }
 }
+
+// WithImageRetention bounds the private wire history to the newest n
+// screenshots; older ones are replaced with a text placeholder (see
+// pruneImages). n <= 0 (the default) keeps every screenshot ever taken,
+// preserving prior behavior.
+func WithImageRetention(n int) Option { return func(p *Provider) { p.imageRetention = n } }
 
 // New builds an Anthropic provider. Without WithClientOptions the SDK resolves
 // credentials from the environment (ANTHROPIC_API_KEY / profile).
@@ -94,6 +101,7 @@ func (p *Provider) Step(ctx context.Context, conv *model.Conversation, opts ...m
 	defer p.mu.Unlock()
 
 	p.encodeNew(conv)
+	p.pruneImages()
 
 	cfg := model.ApplyOptions(opts...)
 	maxTok := p.maxTokens
@@ -141,6 +149,59 @@ func (p *Provider) encodeNew(conv *model.Conversation) {
 		}
 	}
 	p.encoded = len(conv.Messages)
+}
+
+// prunedImagePlaceholder replaces a pruned screenshot's content block.
+const prunedImagePlaceholder = "[screenshot pruned]"
+
+// pruneImages replaces all but the newest imageRetention image content blocks
+// in the private history with a small text placeholder, oldest first, so the
+// request about to be built from p.messages stays bounded instead of resending
+// every screenshot ever taken (it runs right after encodeNew, before the
+// request is constructed). Only user-role messages are scanned: assistant
+// turns are appended natively via resp.ToParam() and never carry image blocks
+// in this codebase, and tool_result blocks here are always text (see
+// toolResultBlocks) — so tool_use/tool_result pairing and message/block counts
+// are unaffected. imageRetention <= 0 keeps everything (default; preserves
+// prior behavior).
+func (p *Provider) pruneImages() {
+	if p.imageRetention <= 0 {
+		return
+	}
+	total := 0
+	for _, m := range p.messages {
+		if m.Role != sdk.BetaMessageParamRoleUser {
+			continue
+		}
+		for _, b := range m.Content {
+			if b.OfImage != nil {
+				total++
+			}
+		}
+	}
+	drop := total - p.imageRetention
+	if drop <= 0 {
+		return
+	}
+	pruned := 0
+	for i := range p.messages {
+		if pruned >= drop {
+			break
+		}
+		if p.messages[i].Role != sdk.BetaMessageParamRoleUser {
+			continue
+		}
+		for j := range p.messages[i].Content {
+			if pruned >= drop {
+				break
+			}
+			if p.messages[i].Content[j].OfImage == nil {
+				continue
+			}
+			p.messages[i].Content[j] = sdk.NewBetaTextBlock(prunedImagePlaceholder)
+			pruned++
+		}
+	}
 }
 
 func userBlocks(content []model.Content) []sdk.BetaContentBlockParamUnion {

@@ -4,29 +4,22 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"runtime"
 
 	"github.com/gnanam1990/argus/internal/driver/robotgo"
 )
 
-// errPermissionsReminder notes the macOS TCC grants the native backend needs.
-var errPermissionsReminder = errors.New(
-	"native backend ready — grant Screen Recording + Accessibility to this binary if capture/input fail")
-
 // displayServer reports the native backend (robotgo build).
 func displayServer() string { return "native (robotgo/" + runtime.GOOS + ")" }
 
 // preflight reports host readiness for the native backend. robotgo drives the
-// host directly, but macOS requires the operator to grant Screen Recording and
-// Accessibility permissions.
-func preflight() error {
-	if runtime.GOOS == "darwin" {
-		return errPermissionsReminder
-	}
-	return nil
-}
+// host directly; there is no reliable static check for the macOS Screen
+// Recording/Accessibility grants short of actually using them, so preflight
+// always succeeds here and defers to captureCheck's real probe below instead
+// of printing a reminder that would contradict it (doctor must be able to
+// report "host control: ok" once permissions are actually granted).
+func preflight() error { return nil }
 
 // captureCheck actually attempts a screen capture and reports the result, so
 // doctor gives a definitive answer instead of a guess.
