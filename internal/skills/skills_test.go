@@ -20,9 +20,22 @@ func TestListBuiltins(t *testing.T) {
 			t.Errorf("skill %q has no description", s.Name)
 		}
 	}
-	for _, want := range []string{"macos-basics", "computer-use-safety"} {
+	for _, want := range []string{"macos-basics", "computer-use-safety", "web-basics"} {
 		if _, ok := names[want]; !ok {
 			t.Errorf("built-in skill %q missing from List()", want)
+		}
+	}
+}
+
+func TestResolveWebBasics(t *testing.T) {
+	t.Parallel()
+	got, err := Resolve([]string{"web-basics"}, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"web browser", "wait for the page", "Login walls"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("web-basics guidance missing %q", want)
 		}
 	}
 }
