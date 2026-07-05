@@ -1,0 +1,31 @@
+{
+  "provider": {
+    "kind": "chatgpt",
+    "model": "gpt-5.5",
+    "max_tokens": 4096
+  },
+  "agent": {
+    "max_steps": 200,
+    "retain_images": 2,
+    "screenshot_max_edge": 1400,
+    "skills": [
+      "computer-use-safety",
+      "macos-basics"
+    ]
+  },
+  "grounding": {
+    "mode": "none"
+  },
+  "sandbox": {
+    "kind": "host"
+  },
+  "computer_use": {
+    "enabled": true,
+    "require_confirmation": true,
+    "auto_approve_apps": [
+      "com.apple.clock",
+      "com.apple.Notes"
+    ],
+    "max_capture_timeout_ms": 120000
+  }
+}
