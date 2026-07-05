@@ -203,12 +203,38 @@ argus run --tui --config examples/config/host-anthropic.json "book a flight"
 | Host OS | Driver | Notes |
 |---|---|---|
 | Linux/X11 | `shell` (CGo-free) | Needs `xdotool` + a screenshot tool (`maim`) + `xrandr`. |
+| Linux/Wayland | `wayland` (CGo-free) | Needs `ydotool` (+ its `ydotoold` daemon) and a screenshot tool (`grim`, `gnome-screenshot`, or `spectacle`). See below. |
 | macOS/Windows | `robotgo` | Build with `make build-robotgo` (see below). |
 | Any | container sandbox | A Linux desktop in Docker, driven over the transport. |
 
-The default `argus` binary uses the CGo-free X11 `shell` driver, which only
-works on Linux/X11. Wayland and headless hosts are detected and reported by
-`doctor` rather than silently no-op'd.
+The default `argus` binary is CGo-free and auto-selects by display server:
+the X11 `shell` driver on X11, the `wayland` driver on Wayland. Headless hosts
+(no display) are detected and reported by `doctor` rather than silently
+no-op'd.
+
+### Linux / Wayland
+
+Wayland blocks synthetic input and has no `xdotool`/`xrandr`, so the `wayland`
+driver injects input through **ydotool** (kernel `uinput`, so it works on
+wlroots/Sway/Hyprland, GNOME, and KDE alike) and screenshots via the first of
+`grim` → `gnome-screenshot` → `spectacle` that's installed. Setup:
+
+```sh
+# 1. Install the tools (example: Arch; use your distro's packages)
+sudo pacman -S ydotool grim            # or: gnome-screenshot / spectacle
+
+# 2. Run the ydotool daemon (needs access to /dev/uinput)
+sudo ydotoold &                        # or set up a udev rule + user service
+
+# 3. Verify
+./argus doctor                         # → display server: wayland; tools present
+```
+
+Notes and current limits: pointer position can't be read back on Wayland
+(`CursorPosition` is unsupported); coordinates are screenshot pixels, so a
+fractional-scaling setup may need calibration; `scroll` uses ydotool's wheel
+(version-dependent). Every command is overridable if your `ydotool`/screenshot
+tool differs.
 
 ### macOS / Windows
 

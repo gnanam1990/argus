@@ -74,9 +74,11 @@ providers and drivers never depend on the loop.
 ## Platform posture (honest)
 
 - **Linux/X11:** CGo-free static `shell` driver — full host control.
+- **Linux/Wayland:** CGo-free `wayland` driver — input via `ydotool` (uinput),
+  screenshots via `grim`/`gnome-screenshot`/`spectacle`. Auto-selected on a
+  Wayland session; needs those tools + the `ydotoold` daemon.
 - **macOS/Windows:** `robotgo` built `CGO_ENABLED=1` on native runners (not
   cross-compiled); the "single static binary" claim is dropped for those OSes.
-- **Wayland:** detected and reported, never silently no-op.
 - **Containers** drive a *Linux* desktop only — never the macOS/Windows host GUI.
 
 ## Key risks tracked
