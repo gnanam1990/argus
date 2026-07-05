@@ -52,6 +52,8 @@ func run(args []string, out io.Writer) error {
 		return viewCmd(args[1:], out)
 	case "bench":
 		return benchCmd(args[1:], out)
+	case "skills":
+		return skillsCmd(out)
 	case "auth":
 		return authCmd(args[1:], out)
 	default:
@@ -102,6 +104,13 @@ func runTask(args []string, out io.Writer) error {
 	if task == "" {
 		return fmt.Errorf("run: a task is required (argus run \"do the thing\")")
 	}
+
+	// Fold any configured skills into the system prompt.
+	sys, err := app.SystemPrompt(cfg, os.Getenv)
+	if err != nil {
+		return err
+	}
+	cfg.Agent.System = sys
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -196,6 +205,11 @@ func evalCmd(args []string, out io.Writer) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	sys, err := app.SystemPrompt(cfg, os.Getenv)
+	if err != nil {
+		return err
+	}
+	cfg.Agent.System = sys
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -281,6 +295,7 @@ Usage:
   argus eval --manifest FILE [--config FILE]                        Evaluate tasks
   argus view DIR [--addr HOST:PORT]                                 Replay a recorded trajectory in the browser
   argus bench DIR [--config FILE]                                   Score click-grounding accuracy on a dataset
+  argus skills                                                      List built-in guidance skills
   argus auth login|status|logout <provider>                         OAuth logins (xai, chatgpt)
   argus doctor [--config FILE]                                      Diagnose the environment
   argus version                                                     Print version

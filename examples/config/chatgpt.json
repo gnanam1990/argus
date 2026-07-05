@@ -8,7 +8,11 @@
     "max_steps": 200,
     "retain_images": 3,
     "require_approval": true,
-    "screenshot_max_edge": 1400
+    "screenshot_max_edge": 1400,
+    "skills": [
+      "computer-use-safety",
+      "macos-basics"
+    ]
   },
   "grounding": {
     "mode": "none"

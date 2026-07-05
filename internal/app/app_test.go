@@ -243,3 +243,28 @@ func TestSummaryAndManifest(t *testing.T) {
 type discard struct{}
 
 func (discard) Write(p []byte) (int, error) { return len(p), nil }
+
+func TestSystemPromptFoldsInSkills(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.Agent.System = "Base prompt."
+	cfg.Agent.Skills = []string{"macos-basics"}
+
+	sys, err := app.SystemPrompt(cfg, func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sys, "Base prompt.") {
+		t.Error("base system prompt must be preserved")
+	}
+	if !strings.Contains(sys, "Operating macOS") {
+		t.Error("skill guidance must be folded into the system prompt")
+	}
+
+	// No skills → unchanged.
+	cfg.Agent.Skills = nil
+	sys, err = app.SystemPrompt(cfg, func(string) string { return "" })
+	if err != nil || sys != "Base prompt." {
+		t.Errorf("no skills should leave the prompt unchanged, got %q / %v", sys, err)
+	}
+}

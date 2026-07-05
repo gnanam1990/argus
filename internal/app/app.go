@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 
 	sdkopt "github.com/anthropics/anthropic-sdk-go/option"
@@ -24,6 +25,7 @@ import (
 	"github.com/gnanam1990/argus/internal/provider/compat"
 	"github.com/gnanam1990/argus/internal/sandbox/docker"
 	"github.com/gnanam1990/argus/internal/sandbox/host"
+	"github.com/gnanam1990/argus/internal/skills"
 	"github.com/gnanam1990/argus/pkg/action"
 	"github.com/gnanam1990/argus/pkg/agent"
 	"github.com/gnanam1990/argus/pkg/computer"
@@ -323,6 +325,24 @@ func (s sandboxComputer) ReadFile(ctx context.Context, path string) ([]byte, err
 // WriteFile implements computer.FileWriter over the sandbox.
 func (s sandboxComputer) WriteFile(ctx context.Context, path string, data []byte) error {
 	return s.sb.WriteFile(ctx, path, data)
+}
+
+// SystemPrompt combines the configured system prompt with any resolved skills.
+// Skills are looked up in ARGUS_SKILLS_DIR (when set) before the built-ins.
+func SystemPrompt(cfg config.Config, getenv func(string) string) (string, error) {
+	guidance, err := skills.Resolve(cfg.Agent.Skills, getenv("ARGUS_SKILLS_DIR"), os.ReadFile)
+	if err != nil {
+		return "", err
+	}
+	base := cfg.Agent.System
+	switch {
+	case guidance == "":
+		return base, nil
+	case base == "":
+		return guidance, nil
+	default:
+		return base + "\n\n" + guidance, nil
+	}
 }
 
 // NewRunner composes a Runner from the built parts.

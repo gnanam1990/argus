@@ -48,6 +48,7 @@ type Agent struct {
 	RequireApproval   bool     `json:"require_approval"`
 	RetainImages      int      `json:"retain_images"`
 	Dispatch          string   `json:"dispatch,omitempty"` // cursor (default) | background (macOS accessibility press, no pointer move)
+	Skills            []string `json:"skills,omitempty"`   // guidance skills prepended to the system prompt (see "argus skills")
 }
 
 // Grounding configures the set-of-marks detector.

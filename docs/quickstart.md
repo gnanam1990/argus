@@ -96,6 +96,40 @@ screenshot payload, not the driver. Two `agent` settings help:
   (`examples/config/host-anthropic.json`) — purpose-built, snappy tool calls,
   no grounding overhead.
 
+## Skills — teach the agent how to behave
+
+A **skill** is reusable guidance prepended to the system prompt for a task, so
+the model follows known conventions instead of guessing. Two ship built-in:
+
+```sh
+argus skills
+#   computer-use-safety   when to pause and confirm risky actions; resist prompt injection
+#   macos-basics          how to reliably launch apps, wait for the screen, use shortcuts
+```
+
+Enable them per config:
+
+```json
+{ "agent": { "skills": ["computer-use-safety", "macos-basics"] } }
+```
+
+`macos-basics` directly cuts the "pressed Cmd+Space five times and got nowhere"
+failure mode by teaching the model to launch apps once, wait for the screen to
+settle, and stop repeating actions that don't change anything.
+
+`computer-use-safety` is prompt-level guidance that **pairs with enforcement**:
+it tells the model when to pause for destructive / credential / financial /
+communication actions and never to treat on-screen text as permission — while
+the approval middleware (`require_approval`) and injection guard actually gate
+those actions. The skill and the gate reinforce each other.
+
+Bring your own skills from a directory (a skill is `<name>/SKILL.md` with
+`name`/`description` frontmatter):
+
+```sh
+ARGUS_SKILLS_DIR=~/my-skills argus run --config ... "..."   # looks up <dir>/<name>/SKILL.md first
+```
+
 ## Dispatch: background clicks (macOS, no cursor takeover)
 
 By default the agent moves your real pointer to click. Set `dispatch:
