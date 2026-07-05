@@ -163,13 +163,16 @@ func TestScrollCoordinates(t *testing.T) {
 	fc := fake.New()
 	a := New(fc)
 
-	req := ScrollRequest{Direction: "down", Pages: 1}
+	// The gesture must be issued at the request's resolved point (X,Y), not the
+	// origin — otherwise the driver warps the cursor to the display corner and
+	// scrolls the wrong pane.
+	req := ScrollRequest{Direction: "down", Pages: 1, X: 640, Y: 480}
 	if err := a.Scroll(context.Background(), req); err != nil {
 		t.Fatalf("Scroll: %v", err)
 	}
 	call, _ := fc.Last()
-	if call.X != 0 || call.Y != 0 {
-		t.Fatalf("coords = (%d,%d), want (0,0) when request omits X,Y", call.X, call.Y)
+	if call.X != 640 || call.Y != 480 {
+		t.Fatalf("coords = (%d,%d), want (640,480) from the request", call.X, call.Y)
 	}
 }
 

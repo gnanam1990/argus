@@ -122,19 +122,23 @@ func dirFor(userConfigDir UserConfigDirFunc) (string, error) {
 type ChainLoader struct {
 	readFile      ReadFileFunc
 	userConfigDir UserConfigDirFunc
+	extraDirs     []string // additional override dirs, checked after the default
 }
 
-// NewChainLoader builds a ChainLoader. Either dependency may be nil, in
-// which case it defaults to the real os.ReadFile / os.UserConfigDir;
-// tests should always supply both explicitly to remain hermetic.
-func NewChainLoader(readFile ReadFileFunc, userConfigDir UserConfigDirFunc) *ChainLoader {
+// NewChainLoader builds a ChainLoader. Either function dependency may be nil,
+// in which case it defaults to the real os.ReadFile / os.UserConfigDir; tests
+// should always supply both explicitly to remain hermetic. extraDirs are
+// additional directories searched for per-app overrides (from
+// config.ComputerUse.InstructionDirs), checked after the default
+// <userConfigDir>/argus/cu-instructions dir and before the built-in set.
+func NewChainLoader(readFile ReadFileFunc, userConfigDir UserConfigDirFunc, extraDirs ...string) *ChainLoader {
 	if readFile == nil {
 		readFile = os.ReadFile
 	}
 	if userConfigDir == nil {
 		userConfigDir = os.UserConfigDir
 	}
-	return &ChainLoader{readFile: readFile, userConfigDir: userConfigDir}
+	return &ChainLoader{readFile: readFile, userConfigDir: userConfigDir, extraDirs: extraDirs}
 }
 
 // Load implements Loader.
@@ -143,20 +147,29 @@ func (c *ChainLoader) Load(ctx context.Context, bundleID string) (Instruction, e
 		return Instruction{}, err
 	}
 
+	// Search the default user dir first, then any configured extra dirs, then
+	// the built-in set. The first Markdown file found wins.
+	dirs := make([]string, 0, 1+len(c.extraDirs))
 	if dir, err := dirFor(c.userConfigDir); err == nil {
+		dirs = append(dirs, dir)
+	}
+	dirs = append(dirs, c.extraDirs...)
+
+	for _, dir := range dirs {
 		path := filepath.Join(dir, bundleID+".md")
-		if data, ferr := c.readFile(path); ferr == nil {
+		data, ferr := c.readFile(path)
+		if ferr == nil {
 			return Instruction{
 				BundleIdentifier: bundleID,
 				AppName:          appNameFor(bundleID),
 				Markdown:         string(data),
 			}, nil
-		} else if !errors.Is(ferr, os.ErrNotExist) {
-			// Any error other than "no override present" is treated
-			// the same way: fall through to the built-in set. The
-			// override is a best-effort convenience, not a hard
-			// dependency, so a permission error or similar should
-			// not prevent guidance from being available at all.
+		}
+		// Any error other than "no override present" is treated the same way:
+		// fall through to the next dir / the built-in set. The override is a
+		// best-effort convenience, not a hard dependency, so a permission error
+		// or similar should not prevent guidance from being available at all.
+		if !errors.Is(ferr, os.ErrNotExist) {
 			_ = ferr
 		}
 	}

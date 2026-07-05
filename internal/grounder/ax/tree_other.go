@@ -7,3 +7,7 @@ package ax
 func nativeWalk() (wireScreen, []wireElement, error) {
 	return wireScreen{}, nil, errNativeUnavailable
 }
+
+// nativeFrontmostBundle is unavailable off a darwin cgo build; callers treat
+// "" as "can't verify" and skip the frontmost-app check.
+func nativeFrontmostBundle() string { return "" }

@@ -81,6 +81,11 @@ static char *argus_ax_walk_json(int maxDepth, int maxElements) {
     if (app == nil) return NULL;
     AXUIElementRef axapp = AXUIElementCreateApplication(app.processIdentifier);
     if (axapp == NULL) return NULL;
+    // Bound every AX IPC call. AXUIElementCopyAttributeValue is a synchronous
+    // cross-process call that blocks indefinitely against a frozen/unresponsive
+    // target; a per-element timeout makes an unresponsive app fail fast instead
+    // of pinning this (cgo) thread forever. Inherited by elements copied from it.
+    AXUIElementSetMessagingTimeout(axapp, 2.0f);
     NSMutableArray *elements = [NSMutableArray array];
     walk(axapp, 0, maxDepth, maxElements, elements);
     CFRelease(axapp);
@@ -95,6 +100,24 @@ static char *argus_ax_walk_json(int maxDepth, int maxElements) {
     if (buf == NULL) return NULL;
     memcpy(buf, data.bytes, data.length);
     buf[data.length] = '\0';
+    return buf;
+  }
+}
+
+// argus_frontmost_bundle returns a malloc'd copy of the frontmost application's
+// bundle identifier (empty string if none / unavailable). The caller frees it.
+// Used to verify the app actually in front is the one the caller asked to
+// observe before grounding its tree.
+static char *argus_frontmost_bundle(void) {
+  @autoreleasepool {
+    NSRunningApplication *app = [[NSWorkspace sharedWorkspace] frontmostApplication];
+    NSString *bid = app ? app.bundleIdentifier : nil;
+    if (bid == nil) bid = @"";
+    const char *c = [bid UTF8String];
+    size_t n = strlen(c);
+    char *buf = (char *)malloc(n + 1);
+    if (buf == NULL) return NULL;
+    memcpy(buf, c, n + 1);
     return buf;
   }
 }
@@ -115,4 +138,16 @@ func nativeWalk() (wireScreen, []wireElement, error) {
 	}
 	defer C.free(unsafe.Pointer(cs))
 	return parseTree([]byte(C.GoString(cs)))
+}
+
+// nativeFrontmostBundle returns the frontmost application's bundle identifier,
+// or "" if unavailable. Callers use it to confirm the app they intend to
+// observe/act on is actually frontmost before grounding its tree.
+func nativeFrontmostBundle() string {
+	cs := C.argus_frontmost_bundle()
+	if cs == nil {
+		return ""
+	}
+	defer C.free(unsafe.Pointer(cs))
+	return C.GoString(cs)
 }

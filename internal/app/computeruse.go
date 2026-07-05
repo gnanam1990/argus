@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"time"
 
@@ -60,15 +61,21 @@ func BuildComputerUse(cfg config.Config) (*ComputerUse, func() error, error) {
 	}
 	store := approval.NewFileStore(storePath)
 	for _, b := range cfg.ComputerUse.AutoApproveApps {
-		if b != "" {
-			_ = store.Set(context.Background(), b, approval.Approved)
+		if b == "" {
+			continue
+		}
+		if err := store.Set(context.Background(), b, approval.Approved); err != nil {
+			_ = comp.Close()
+			return nil, nil, fmt.Errorf("pre-approve %q: %w", b, err)
 		}
 	}
 
-	loader := instructions.NewChainLoader(os.ReadFile, os.UserConfigDir)
+	loader := instructions.NewChainLoader(os.ReadFile, os.UserConfigDir, cfg.ComputerUse.InstructionDirs...)
 	// Ground against the same display the driver captures: pass its global
-	// bounds so accessibility frames map into the display's local space.
-	var axOpts []ax.HostOption
+	// bounds so accessibility frames map into the display's local space. Use
+	// logical coordinates — the actor feeds these frames straight to the
+	// driver, which works in logical points, so pixel scaling must be off.
+	axOpts := []ax.HostOption{ax.WithLogicalCoords()}
 	if db, ok := comp.(computer.DisplayBounder); ok {
 		x, y, w, h := db.DisplayBounds()
 		if w > 0 && h > 0 {

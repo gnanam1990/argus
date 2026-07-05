@@ -225,7 +225,10 @@ func TestEndToEndAppAwareComputerUse(t *testing.T) {
 	loader := instructions.NewChainLoader(os.ReadFile, os.UserConfigDir)
 	shot := fakeScreenshotter{img: action.Image{MIME: action.MIMEPNG, Data: tinyPNG(t)}}
 
-	worker := capture.NewDefaultWorker(orch, store, focuser, provider, loader, shot)
+	// The frontmost-app guard is unit-tested in the capture package; keep this
+	// end-to-end wiring test independent of the real desktop's frontmost app.
+	worker := capture.NewDefaultWorker(orch, store, focuser, provider, loader, shot,
+		capture.WithFrontmostFunc(func() string { return "" }))
 	sp := capture.NewProvider(worker, fakeAppLister{})
 
 	// Real actor over a recording fake driver.

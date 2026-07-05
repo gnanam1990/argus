@@ -75,11 +75,13 @@ func (f *fakeShot) Screenshot(context.Context) (action.Image, error) { return f.
 
 // fakeGrounding is a hermetic grounding.Provider.
 type fakeGrounding struct {
-	root state.Element
-	err  error
+	root  state.Element
+	err   error
+	calls int
 }
 
 func (f *fakeGrounding) FrontmostTree(context.Context, string) (state.Element, error) {
+	f.calls++
 	return f.root, f.err
 }
 
@@ -142,7 +144,11 @@ func happyDeps() *deps {
 }
 
 func newWorker(d *deps, opts ...capture.Option) *capture.DefaultWorker {
-	return capture.NewDefaultWorker(d.orch, d.store, d.focuser, d.ground, d.loader, d.shot, opts...)
+	// Default the frontmost check to "unverifiable" so existing tests (which
+	// don't control the real frontmost app) exercise the rest of the pipeline;
+	// a test that wants the check active overrides this via a later option.
+	all := append([]capture.Option{capture.WithFrontmostFunc(func() string { return "" })}, opts...)
+	return capture.NewDefaultWorker(d.orch, d.store, d.focuser, d.ground, d.loader, d.shot, all...)
 }
 
 // drain collects every Update from ch until it closes.
@@ -374,6 +380,45 @@ func TestFocusError_Fails(t *testing.T) {
 	}
 	if !strings.Contains(updates[0].Error, "activation refused") {
 		t.Errorf("Error = %q, want it to mention the focus failure", updates[0].Error)
+	}
+}
+
+func TestWrongAppFrontmost_FailsClosed(t *testing.T) {
+	t.Parallel()
+	d := happyDeps()
+	// The requested app never becomes frontmost — a different app is in front.
+	w := newWorker(d, capture.WithFrontmostFunc(func() string { return "com.other.app" }),
+		capture.WithSleep(func(context.Context, time.Duration) error { return nil }))
+
+	ch, err := w.Start(context.Background(), capture.Request{BundleIdentifier: "com.example.app"})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	updates := drain(t, ch)
+	if len(updates) != 1 || updates[0].Type != capture.UpdateFailed {
+		t.Fatalf("updates = %+v, want a single UpdateFailed", updates)
+	}
+	if !strings.Contains(updates[0].Error, "frontmost") || !strings.Contains(updates[0].Error, "com.other.app") {
+		t.Errorf("Error = %q, want it to name the wrong frontmost app", updates[0].Error)
+	}
+	// It must fail closed BEFORE grounding the wrong app's tree.
+	if d.ground.calls != 0 {
+		t.Errorf("grounding was called %d times; must not ground the wrong app", d.ground.calls)
+	}
+}
+
+func TestCorrectAppFrontmost_Proceeds(t *testing.T) {
+	t.Parallel()
+	d := happyDeps()
+	w := newWorker(d, capture.WithFrontmostFunc(func() string { return "com.example.app" }))
+
+	ch, err := w.Start(context.Background(), capture.Request{BundleIdentifier: "com.example.app"})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	updates := drain(t, ch)
+	if len(updates) == 0 || updates[len(updates)-1].Type != capture.UpdateCompleted {
+		t.Fatalf("updates = %+v, want a terminal UpdateCompleted", updates)
 	}
 }
 

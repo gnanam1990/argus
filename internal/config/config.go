@@ -27,12 +27,21 @@ type Config struct {
 
 // ComputerUse configures the app-aware desktop computer-use subsystem (macOS).
 type ComputerUse struct {
-	Enabled           bool     `json:"enabled"`
+	// Enabled gates the subsystem. It is a pointer so an omitted value (nil)
+	// means "enabled" — running `argus-mcp --mode=computeruse` or `argus cu` is
+	// already an explicit opt-in — while an explicit `"enabled": false` disables
+	// it, letting an operator hard-off computer use in a shared config. Use
+	// IsEnabled to read it.
+	Enabled           *bool    `json:"enabled,omitempty"`
 	AutoApproveApps   []string `json:"auto_approve_apps,omitempty"` // bundle ids pre-approved at startup
 	RequireConfirm    bool     `json:"require_confirmation"`        // route risky actions to the approver
 	InstructionDirs   []string `json:"instruction_dirs,omitempty"`  // extra per-app instruction dirs
 	MaxCaptureTimeout int      `json:"max_capture_timeout_ms"`      // capture worker timeout (ms); 0 = default 120000
 }
+
+// IsEnabled reports whether the computer-use subsystem is allowed to run. An
+// unset Enabled (nil) defaults to true; only an explicit false disables it.
+func (c ComputerUse) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
 
 // Provider selects and configures the model adapter.
 type Provider struct {

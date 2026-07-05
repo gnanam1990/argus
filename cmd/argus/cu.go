@@ -154,7 +154,7 @@ func openApprovalStore() (approval.Store, error) {
 	return approval.NewFileStore(path), nil
 }
 
-const cuUsage = `argus cu - app-aware desktop computer use (macOS)
+const cuUsage = `argus cu - desktop computer use helpers (macOS)
 
 Usage:
   argus cu run [--config F] [--tui] "TASK"   Run a task with the confirmation policy on
@@ -164,5 +164,10 @@ Usage:
   argus cu instructions list                 List built-in per-app instructions
   argus cu doctor                            Check permissions and approvals
 
-The app-aware MCP tool server is 'argus-mcp --mode=computeruse'.
+'argus cu run' runs the ordinary agent with the risk-classifying confirmation
+policy enabled (it prompts before risky actions). The full app-aware toolset
+(get_app_state, list_apps, click-by-element) with the per-app approval store and
+per-app instructions is served over MCP by 'argus-mcp --mode=computeruse' —
+point an MCP client at that. approvals/instructions/doctor here manage the state
+that server uses.
 `

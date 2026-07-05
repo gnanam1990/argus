@@ -8,10 +8,8 @@
 package robotgo
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"image/png"
 	"runtime"
 	"strings"
 
@@ -27,7 +25,11 @@ import (
 // screen in a multi-monitor layout.
 type Driver struct {
 	display int
-	ox, oy  int // the target display's global (logical) origin
+	// bounds resolves a display's global logical bounds. It's a field (not a
+	// direct robotgo call) so it's queried live on every use — handling a
+	// mid-run display rearrange — and can be faked in tests. Defaults to
+	// robotgo.GetDisplayBounds.
+	bounds func(display int) (x, y, w, h int)
 }
 
 // Option configures a Driver.
@@ -37,9 +39,10 @@ type Option func(*Driver)
 // index falls back to the primary.
 func WithDisplay(n int) Option { return func(d *Driver) { d.display = n } }
 
-// New builds a robotgo driver, resolving the target display's global origin so
-// input coordinates (which robotgo interprets in the whole-desktop space) are
-// offset from the captured display's local space.
+// New builds a robotgo driver for the given display. The display's global
+// origin is resolved live on each input/capture call (see origin) rather than
+// cached, so rearranging or unplugging monitors mid-run doesn't leave every
+// click offset against a stale origin.
 func New(opts ...Option) *Driver {
 	d := &Driver{}
 	for _, o := range opts {
@@ -48,7 +51,9 @@ func New(opts ...Option) *Driver {
 	if d.display < 0 || d.display >= robotgo.DisplaysNum() {
 		d.display = 0
 	}
-	d.ox, d.oy, _, _ = robotgo.GetDisplayBounds(d.display)
+	if d.bounds == nil {
+		d.bounds = robotgo.GetDisplayBounds
+	}
 	return d
 }
 
@@ -72,9 +77,19 @@ func Displays() []DisplayInfo {
 	return out
 }
 
+// origin resolves the driven display's global (logical) top-left, live on each
+// call so a mid-run display rearrange/unplug can't leave a stale offset.
+func (d *Driver) origin() (int, int) {
+	x, y, _, _ := d.bounds(d.display)
+	return x, y
+}
+
 // g maps a coordinate in the captured display's local space to the global
 // whole-desktop space robotgo's input functions expect.
-func (d *Driver) g(x, y int) (int, int) { return x + d.ox, y + d.oy }
+func (d *Driver) g(x, y int) (int, int) {
+	ox, oy := d.origin()
+	return x + ox, y + oy
+}
 
 // moveSettleMS is how long to wait after warping the cursor before posting a
 // button or scroll event. robotgo.Move warps the pointer asynchronously; a
@@ -84,6 +99,10 @@ func (d *Driver) g(x, y int) (int, int) { return x + d.ox, y + d.oy }
 // event land at the moved position. 40ms sufficed in testing; 80ms is a safe
 // margin under load and is negligible for interactive computer-use pacing.
 const moveSettleMS = 80
+
+// dragStepMS spaces intermediate drag waypoints so the OS/app sees a stream of
+// motion events over time rather than an instantaneous jump.
+const dragStepMS = 16
 
 // moveTo warps the cursor to the global position for (x, y) and lets the warp
 // register before the caller posts a button/scroll event. Use this instead of
@@ -97,28 +116,22 @@ func (d *Driver) moveTo(x, y int) {
 // so callers working in global coordinates (the accessibility path) can align
 // with the display this driver captures. Implements computer.DisplayBounder.
 func (d *Driver) DisplayBounds() (x, y, w, h int) {
-	_, _, w, h = robotgo.GetDisplayBounds(d.display)
-	return d.ox, d.oy, w, h
+	return d.bounds(d.display)
 }
 
-// Screenshot captures the target display and encodes it as PNG.
-func (d *Driver) Screenshot(_ context.Context) (action.Image, error) {
-	img, err := robotgo.CaptureImg(d.display)
-	if err != nil {
-		return action.Image{}, captureError(err)
-	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return action.Image{}, fmt.Errorf("robotgo encode: %w", err)
-	}
-	return action.Image{MIME: action.MIMEPNG, Data: buf.Bytes()}, nil
+// Screenshot captures the driven display. The actual capture is
+// platform-specific (see captureDisplay): macOS uses the system screencapture
+// targeting the display's global rect because robotgo's capture returns the
+// main display regardless of index on current macOS.
+func (d *Driver) Screenshot(ctx context.Context) (action.Image, error) {
+	return d.captureDisplay(ctx)
 }
 
 // ScreenSize returns the target display's logical size. The executor derives
 // the model→screen scale from this versus the captured pixel dimensions, so a
 // HiDPI display is handled the same way as the primary.
 func (d *Driver) ScreenSize(_ context.Context) (int, int, error) {
-	_, _, w, h := robotgo.GetDisplayBounds(d.display)
+	_, _, w, h := d.bounds(d.display)
 	return w, h, nil
 }
 
@@ -174,6 +187,11 @@ func (d *Driver) Drag(_ context.Context, path []action.Point, b action.Button) e
 	}
 	for _, p := range path[1:] {
 		robotgo.Move(d.g(p.X, p.Y))
+		// Space the intermediate motion over real wall-clock time: many drag
+		// targets (HTML5 drag-and-drop, canvas apps, Finder) drive their state
+		// machine off a stream of mouseDragged events and ignore a burst of
+		// same-instant moves.
+		robotgo.MilliSleep(dragStepMS)
 	}
 	robotgo.MilliSleep(moveSettleMS)
 	if err := robotgo.Toggle(name, "up"); err != nil {
@@ -219,9 +237,48 @@ func scrollArgs(dx, dy int) (x, y int) {
 	return -dx, -dy
 }
 
-// TypeText types literal text.
+// TypeText types literal text. Characters outside the Basic Multilingual Plane
+// (emoji, supplementary-plane CJK) are typed by pasting from the clipboard,
+// because robotgo's per-character Unicode typing truncates code points to 16
+// bits on macOS and would emit garbage for them. Pure-BMP text takes the direct
+// synthetic-keystroke path (which most text fields handle more faithfully than a
+// paste). Note this inserts a literal newline for "\n"; callers that need the
+// Return key to fire (e.g. submit-on-enter) must use KeyPress("enter").
 func (d *Driver) TypeText(_ context.Context, text string) error {
-	robotgo.TypeStr(text)
+	if hasNonBMP(text) {
+		return d.pasteText(text)
+	}
+	robotgo.Type(text)
+	return nil
+}
+
+// hasNonBMP reports whether s contains any rune above U+FFFF.
+func hasNonBMP(s string) bool {
+	for _, r := range s {
+		if r > 0xFFFF {
+			return true
+		}
+	}
+	return false
+}
+
+// pasteText types text by round-tripping the clipboard (write, Cmd/Ctrl+V),
+// restoring the prior clipboard contents afterward on a best-effort basis.
+func (d *Driver) pasteText(text string) error {
+	prev, _ := robotgo.ReadAll() // best effort; empty on error
+	if err := robotgo.WriteAll(text); err != nil {
+		return fmt.Errorf("robotgo clipboard write: %w", err)
+	}
+	mod := "cmd"
+	if runtime.GOOS != "darwin" {
+		mod = "ctrl"
+	}
+	err := robotgo.KeyTap("v", mod)
+	robotgo.MilliSleep(moveSettleMS) // let the paste land before restoring the clipboard
+	_ = robotgo.WriteAll(prev)       // restore; ignore failure so a clipboard hiccup doesn't fail the type
+	if err != nil {
+		return fmt.Errorf("robotgo paste: %w", err)
+	}
 	return nil
 }
 
@@ -273,8 +330,9 @@ func (d *Driver) KeyUp(_ context.Context, key string) error {
 // space (global position minus the display origin), matching the coordinate
 // space of Screenshot/ScreenSize.
 func (d *Driver) CursorPosition(_ context.Context) (int, int, error) {
-	x, y := robotgo.GetMousePos()
-	return x - d.ox, y - d.oy, nil
+	x, y := robotgo.Location()
+	ox, oy := d.origin()
+	return x - ox, y - oy, nil
 }
 
 // Close is a no-op.

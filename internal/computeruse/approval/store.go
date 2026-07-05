@@ -51,6 +51,7 @@ type FileStore struct {
 	mu      sync.Mutex
 	records map[string]Record
 	loaded  bool
+	modTime time.Time // mtime of the file at last load, to detect external writes
 }
 
 // Option configures a FileStore.
@@ -162,28 +163,46 @@ func (s *FileStore) MigrateFrom(legacyPath string) error {
 	return s.save()
 }
 
-// load reads the file once into the cache. A missing file is an empty store.
+// load reads the file into the cache, re-reading whenever the file's mtime has
+// changed since the last load so a long-running process (e.g. the argus-mcp
+// server) observes approvals/revocations made by a separate `argus cu
+// approvals` invocation instead of trusting a stale startup snapshot — approval
+// is the human safety gate, so a mid-session revoke must take effect. A missing
+// file is an empty store (and stays watched, so a later first write is picked
+// up). The file write is atomic (temp + rename, see save), so a concurrent
+// reader never sees a partial file.
 func (s *FileStore) load() error {
-	if s.loaded {
-		return nil
-	}
-	data, err := os.ReadFile(s.path)
+	info, err := os.Stat(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// Missing file: empty store. Reset any prior cache so a revoke that
+			// deletes the file is honored, and keep watching for (re)creation.
+			s.records = map[string]Record{}
+			s.modTime = time.Time{}
 			s.loaded = true
 			return nil
 		}
+		return fmt.Errorf("approval: stat: %w", err)
+	}
+	if s.loaded && info.ModTime().Equal(s.modTime) {
+		return nil // cache still reflects the file on disk
+	}
+	data, err := os.ReadFile(s.path)
+	if err != nil {
 		return fmt.Errorf("approval: read: %w", err)
 	}
 	var recs []Record
 	if err := json.Unmarshal(data, &recs); err != nil {
 		return fmt.Errorf("approval: parse: %w", err)
 	}
+	fresh := make(map[string]Record, len(recs))
 	for _, r := range recs {
 		if r.BundleIdentifier != "" {
-			s.records[r.BundleIdentifier] = r
+			fresh[r.BundleIdentifier] = r
 		}
 	}
+	s.records = fresh
+	s.modTime = info.ModTime()
 	s.loaded = true
 	return nil
 }
@@ -221,6 +240,11 @@ func (s *FileStore) save() error {
 	}
 	if err := os.Rename(tmpName, s.path); err != nil {
 		return fmt.Errorf("approval: rename: %w", err)
+	}
+	// Record the mtime of what we just wrote so the next load() doesn't need to
+	// re-read our own write; an external writer will still bump it past this.
+	if info, err := os.Stat(s.path); err == nil {
+		s.modTime = info.ModTime()
 	}
 	return nil
 }

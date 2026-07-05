@@ -249,9 +249,17 @@ func (s *Server) toolScroll(ctx context.Context, a toolArgs) map[string]any {
 	if r.err != "" {
 		return toolError(r.err)
 	}
-	_, _, err := resolveXY(r.state, a)
+	x, y, err := resolveXY(r.state, a)
 	if err != nil {
 		return toolError("scroll: " + err.Error())
+	}
+	// With no explicit element/point, scroll over the app's window center rather
+	// than at the resolveXY default of (0,0) — otherwise the gesture (and the
+	// cursor) jumps to the display's top-left corner and scrolls the wrong thing.
+	if a.ElementIndex == nil && a.X == nil && a.Y == nil {
+		wf := r.state.WindowFrame
+		x = int(wf.X + wf.Width/2)
+		y = int(wf.Y + wf.Height/2)
 	}
 	elementIndex := -1
 	if a.ElementIndex != nil {
@@ -260,6 +268,8 @@ func (s *Server) toolScroll(ctx context.Context, a toolArgs) map[string]any {
 	err = s.act.Scroll(ctx, actor.ScrollRequest{
 		BundleIdentifier: a.BundleIdentifier,
 		ElementIndex:     elementIndex,
+		X:                x,
+		Y:                y,
 		Direction:        a.Direction,
 		Pages:            a.Pages,
 	})

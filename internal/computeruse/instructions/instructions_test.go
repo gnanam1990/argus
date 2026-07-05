@@ -105,6 +105,47 @@ func TestChainLoader_FilesystemOverrideWinsOverEmbedded(t *testing.T) {
 	}
 }
 
+// TestChainLoader_ExtraDirIsSearched locks in config.ComputerUse.InstructionDirs
+// being a live knob: an override placed in a configured extra dir is loaded for a
+// bundle that has neither a default-dir override nor a built-in entry.
+func TestChainLoader_ExtraDirIsSearched(t *testing.T) {
+	_, ucd := tempConfigDir(t) // default dir stays empty
+	extra := t.TempDir()
+	const body = "# Custom app tips\n"
+	if err := os.WriteFile(filepath.Join(extra, "com.custom.app.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loader := NewChainLoader(nil, ucd, extra)
+	got, err := loader.Load(context.Background(), "com.custom.app")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Markdown != body {
+		t.Errorf("Load().Markdown = %q, want the extra-dir override %q", got.Markdown, body)
+	}
+}
+
+// TestChainLoader_DefaultDirWinsOverExtraDir locks in the search order: the
+// documented default dir takes precedence over configured extra dirs.
+func TestChainLoader_DefaultDirWinsOverExtraDir(t *testing.T) {
+	root, ucd := tempConfigDir(t)
+	writeOverride(t, root, "com.apple.clock", "# from default dir\n")
+	extra := t.TempDir()
+	if err := os.WriteFile(filepath.Join(extra, "com.apple.clock.md"), []byte("# from extra dir\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loader := NewChainLoader(nil, ucd, extra)
+	got, err := loader.Load(context.Background(), "com.apple.clock")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Markdown != "# from default dir\n" {
+		t.Errorf("Load().Markdown = %q, want the default-dir override to win", got.Markdown)
+	}
+}
+
 func TestChainLoader_FallsBackToEmbedded(t *testing.T) {
 	_, ucd := tempConfigDir(t) // empty dir: no override file written
 

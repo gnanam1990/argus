@@ -50,10 +50,13 @@ type KeyRequest struct {
 
 // ScrollRequest describes a scroll gesture at a resolved screen location.
 // Direction is one of "up", "down", "left", "right"; Pages scales the
-// gesture (Pages <= 0 is treated as 1).
+// gesture (Pages <= 0 is treated as 1). X, Y is the resolved point the gesture
+// is issued at (the caller resolves ElementIndex to it upstream), so the scroll
+// lands over the intended pane rather than wherever the pointer happened to be.
 type ScrollRequest struct {
 	BundleIdentifier string
 	ElementIndex     int
+	X, Y             int
 	Direction        string
 	Pages            int
 }
@@ -136,10 +139,9 @@ func (a *DefaultActor) PressKey(ctx context.Context, req KeyRequest) error {
 }
 
 // Scroll converts req.Direction and req.Pages into a dx/dy delta and issues
-// it at the origin (0, 0); ScrollRequest carries no target coordinates of
-// its own, so the driver applies the gesture wherever the pointer or focus
-// currently is. Direction follows the canonical contract that positive DY
-// scrolls down:
+// it at req.X, req.Y (the resolved target point), so the gesture lands over the
+// intended element/pane. Direction follows the canonical contract that positive
+// DY scrolls down:
 //
 //	"down"  -> dy = +pages*linesPerPage
 //	"up"    -> dy = -pages*linesPerPage
@@ -168,7 +170,7 @@ func (a *DefaultActor) Scroll(ctx context.Context, req ScrollRequest) error {
 		return fmt.Errorf("actor: unknown scroll direction %q", req.Direction)
 	}
 
-	return a.computer.Scroll(ctx, 0, 0, dx, dy)
+	return a.computer.Scroll(ctx, req.X, req.Y, dx, dy)
 }
 
 // Drag performs a two-point drag from req.FromX, req.FromY to req.ToX,

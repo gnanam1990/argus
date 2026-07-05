@@ -110,6 +110,17 @@ func WithRunner(r Runner) HostOption {
 // WithTimeout overrides the default 5s osascript timeout.
 func WithTimeout(d time.Duration) HostOption { return func(h *hostSource) { h.timeout = d } }
 
+// WithLogicalCoords keeps element frames in logical screen points (the space
+// the accessibility API and the input driver both use) instead of scaling them
+// into the screenshot's pixel space. The set-of-marks vision grounder wants
+// pixel space so marks line up with the screenshot it sends a model; the
+// computer-use path instead feeds these frames straight to the driver's
+// click/scroll, which expects logical points — scaling them (2x on a Retina
+// display) would land every click at roughly twice the intended offset. Display
+// offset and off-display filtering still apply; only the pixel scaling is
+// suppressed.
+func WithLogicalCoords() HostOption { return func(h *hostSource) { h.logical = true } }
+
 // WithDisplayBounds binds the tree source (and a Clicker built with the same
 // option) to a specific display given its global bounds in logical points
 // (x,y = top-left origin; w,h = size), as reported by the driver. Element
@@ -128,6 +139,7 @@ type hostSource struct {
 	run     Runner
 	timeout time.Duration
 	native  bool // try the cgo AXUIElement walk before osascript
+	logical bool // keep frames in logical points (no screenshot-pixel scaling)
 
 	// display bounds in logical points (0,0,0,0 = unset → whole-desktop).
 	dispX, dispY, dispW, dispH float64
@@ -137,6 +149,13 @@ type hostSource struct {
 // build, non-darwin, or the process isn't accessibility-trusted); the tree
 // source falls back to the osascript walk.
 var errNativeUnavailable = errors.New("ax: native accessibility walk unavailable")
+
+// FrontmostBundleID returns the bundle identifier of the application currently
+// frontmost, or "" when it can't be determined (including on non-darwin or
+// non-cgo builds, where callers should treat it as "unverifiable"). The native
+// accessibility walk reads whichever app is frontmost, so callers verify with
+// this that the intended app is actually in front before trusting the walk.
+func FrontmostBundleID() string { return nativeFrontmostBundle() }
 
 // HostSource returns a TreeSource backed by the real host's accessibility
 // tree (see the package doc above for the JXA approach and coordinate
@@ -193,9 +212,13 @@ func (h *hostSource) finish(screen wireScreen, els []wireElement, img action.Ima
 		filter = true
 	}
 	sx, sy := 1.0, 1.0
-	if imgW, imgH, ok := decodeSize(img); ok && refW > 0 && refH > 0 {
-		sx = float64(imgW) / refW
-		sy = float64(imgH) / refH
+	// In logical mode the frames are consumed by the input driver, which works
+	// in logical points, so leave scale at 1 (AX frames are already logical).
+	if !h.logical {
+		if imgW, imgH, ok := decodeSize(img); ok && refW > 0 && refH > 0 {
+			sx = float64(imgW) / refW
+			sy = float64(imgH) / refH
+		}
 	}
 	return mapElements(els, sx, sy, ox, oy, refW, refH, filter)
 }

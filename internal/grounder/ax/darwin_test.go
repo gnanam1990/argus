@@ -91,6 +91,29 @@ func TestHostSourceParsesAndScales(t *testing.T) {
 	}
 }
 
+// TestHostSourceLogicalCoordsSkipsScaling locks in the fix for HiDPI clicks:
+// with WithLogicalCoords the element boxes stay in logical points (what the
+// input driver consumes) instead of being scaled into the screenshot's pixel
+// space, even when the screenshot is larger than the logical screen (Retina).
+func TestHostSourceLogicalCoordsSkipsScaling(t *testing.T) {
+	t.Parallel()
+	f := &fakeRunner{out: []byte(`{"screen":{"w":1440,"h":900},"elements":[
+		{"role":"AXButton","title":"Save","value":"","x":10,"y":20,"w":80,"h":24,"enabled":true}
+	]}`)}
+	d := ax.New(ax.WithSource(ax.HostSource(ax.WithRunner(f), ax.WithLogicalCoords())))
+	els, err := d.Detect(context.Background(), encodedImage(t, 2880, 1800)) // 2x screenshot
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(els) != 1 {
+		t.Fatalf("got %d elements, want 1", len(els))
+	}
+	// Box stays at the logical point rect, NOT doubled to pixel space.
+	if els[0].Box.Min != (action.Point{X: 10, Y: 20}) || els[0].Box.Max != (action.Point{X: 90, Y: 44}) {
+		t.Errorf("box = %+v, want unscaled logical points (10,20)-(90,44)", els[0].Box)
+	}
+}
+
 func TestHostSourceEmptyOutput(t *testing.T) {
 	t.Parallel()
 	f := &fakeRunner{out: nil}

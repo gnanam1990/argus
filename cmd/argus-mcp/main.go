@@ -58,6 +58,12 @@ func serve(ctx context.Context, mode, configPath string) error {
 		if err != nil {
 			return err
 		}
+		if err := cfg.Validate(); err != nil {
+			return err
+		}
+		if !cfg.ComputerUse.IsEnabled() {
+			return fmt.Errorf("computer use is disabled in config (computer_use.enabled = false)")
+		}
 		cu, cleanup, err := app.BuildComputerUse(cfg)
 		if err != nil {
 			return err

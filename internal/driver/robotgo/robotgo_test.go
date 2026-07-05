@@ -167,20 +167,35 @@ func TestMoveSettleIsPositive(t *testing.T) {
 
 // TestDisplayOffset verifies the local->global coordinate mapping used for
 // multi-monitor input: a driver bound to a display with a non-zero origin adds
-// that origin to every input coordinate (and Screenshot/ScreenSize/Cursor stay
-// in the display's local space via the inverse).
+// that origin to every input coordinate. The display bounds are injected so the
+// test needs no real hardware.
 func TestDisplayOffset(t *testing.T) {
 	t.Parallel()
-	// Simulate a driver bound to a secondary display at global origin (4480,0)
-	// without touching real hardware.
-	d := &Driver{display: 2, ox: 4480, oy: 0}
+	// A driver bound to a secondary display at global origin (4480,0).
+	d := &Driver{display: 2, bounds: func(int) (int, int, int, int) { return 4480, 0, 1920, 1080 }}
 
 	if gx, gy := d.g(960, 540); gx != 5440 || gy != 540 {
 		t.Errorf("g(960,540) = (%d,%d), want (5440,540)", gx, gy)
 	}
 	// Primary display (origin 0,0) is a pass-through.
-	p := &Driver{}
+	p := &Driver{display: 0, bounds: func(int) (int, int, int, int) { return 0, 0, 2560, 1080 }}
 	if gx, gy := p.g(100, 200); gx != 100 || gy != 200 {
 		t.Errorf("primary g(100,200) = (%d,%d), want (100,200)", gx, gy)
+	}
+}
+
+// TestOriginResolvedLive locks in that the display origin is read on every call
+// (not cached at construction), so a mid-run display rearrange is picked up: g()
+// must reflect a bounds change without rebuilding the driver.
+func TestOriginResolvedLive(t *testing.T) {
+	t.Parallel()
+	origin := 4480
+	d := &Driver{display: 1, bounds: func(int) (int, int, int, int) { return origin, 0, 1920, 1080 }}
+	if gx, _ := d.g(10, 0); gx != 4490 {
+		t.Fatalf("g before move = %d, want 4490", gx)
+	}
+	origin = 2560 // the display got rearranged under us
+	if gx, _ := d.g(10, 0); gx != 2570 {
+		t.Errorf("g after rearrange = %d, want 2570 (origin must be re-resolved live)", gx)
 	}
 }

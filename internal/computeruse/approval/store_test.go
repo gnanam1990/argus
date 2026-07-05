@@ -83,6 +83,53 @@ func TestPersistsAcrossInstances(t *testing.T) {
 	}
 }
 
+// TestReloadsOnExternalChange is the running-server-sees-CLI-changes guarantee:
+// a live FileStore instance (the argus-mcp server) must observe an approval and
+// a later revocation written by a separate instance (an `argus cu approvals`
+// invocation) without being rebuilt — a stale cache would silently keep acting
+// on a revoked approval, defeating the human safety gate.
+func TestReloadsOnExternalChange(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "cu-approvals.json")
+	live := approval.NewFileStore(path) // long-running server
+	cli := approval.NewFileStore(path)  // separate CLI process
+
+	// The live store loads the (empty) file first, caching it.
+	if d, _ := live.Get(context.Background(), "com.apple.clock"); d != approval.Pending {
+		t.Fatalf("initial = %q, want pending", d)
+	}
+	// The CLI approves the app.
+	if err := cli.Set(context.Background(), "com.apple.clock", approval.Approved); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := live.Get(context.Background(), "com.apple.clock"); d != approval.Approved {
+		t.Errorf("after external approve = %q, want approved (cache went stale)", d)
+	}
+	// The CLI later revokes it. Force a distinct mtime so the reload triggers
+	// regardless of the filesystem's timestamp granularity.
+	if err := cli.Remove(context.Background(), "com.apple.clock"); err != nil {
+		t.Fatal(err)
+	}
+	bumpMtime(t, path)
+	if d, _ := live.Get(context.Background(), "com.apple.clock"); d != approval.Pending {
+		t.Errorf("after external revoke = %q, want pending (cache went stale)", d)
+	}
+}
+
+// bumpMtime advances a file's modification time so a change is detectable even
+// on filesystems with coarse timestamp resolution.
+func bumpMtime(t *testing.T, path string) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := info.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMigrateFrom(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

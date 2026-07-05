@@ -1,4 +1,4 @@
-//go:build !robotgo
+//go:build !robotgo && !darwin
 
 package app
 

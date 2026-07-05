@@ -13,6 +13,17 @@ This is a separate surface from the raw driver (`argus run`, `argus-mcp`
 default mode) — it exists for tasks that are naturally "operate this specific
 app" rather than "operate whatever's on screen."
 
+## Build requirement (macOS)
+
+Computer use needs the native backend: build with `make build-robotgo` (i.e.
+`-tags robotgo`, CGo enabled). A default `make build` on macOS produces a
+binary with the X11 shell driver, which has no backend on macOS — screen
+capture and input silently fail at first use. Such a binary now prints a
+`WARNING …` to stderr on startup, but the fix is to rebuild with the robotgo
+tag. The native build also uses the AXUIElement API directly, so it needs only
+the two permissions below (no Automation grant, and the accessibility walk
+can't hang the way a System Events / `osascript` walk can).
+
 ## macOS permissions
 
 Computer use needs the same two permissions as the raw driver, checked

@@ -26,6 +26,7 @@ import (
 	"github.com/gnanam1990/argus/internal/computeruse/instructions"
 	"github.com/gnanam1990/argus/internal/computeruse/permissions"
 	"github.com/gnanam1990/argus/internal/computeruse/state"
+	"github.com/gnanam1990/argus/internal/grounder/ax"
 	"github.com/gnanam1990/argus/pkg/action"
 )
 
@@ -175,6 +176,7 @@ type DefaultWorker struct {
 	retryInterval time.Duration
 	now           func() time.Time
 	sleep         func(ctx context.Context, d time.Duration) error
+	frontmost     func() string // bundle id of the frontmost app ("" = unverifiable)
 }
 
 var _ Worker = (*DefaultWorker)(nil)
@@ -202,11 +204,18 @@ func NewDefaultWorker(
 		retryInterval: defaultRetryInterval,
 		now:           time.Now,
 		sleep:         defaultSleep,
+		frontmost:     ax.FrontmostBundleID,
 	}
 	for _, o := range opts {
 		o(w)
 	}
 	return w
+}
+
+// WithFrontmostFunc overrides how the worker reads the frontmost app's bundle
+// id (tests inject a deterministic value; "" means "unverifiable, skip check").
+func WithFrontmostFunc(f func() string) Option {
+	return func(w *DefaultWorker) { w.frontmost = f }
 }
 
 // defaultSleep waits for d, or returns ctx.Err() early if ctx is canceled
@@ -240,6 +249,33 @@ func (w *DefaultWorker) Start(ctx context.Context, req Request) (<-chan Update, 
 	return ch, nil
 }
 
+// frontmostAttempts is how many times awaitFrontmost polls for the requested
+// app to become frontmost after activation, spaced by retryInterval.
+const frontmostAttempts = 6
+
+// awaitFrontmost polls until the frontmost app's bundle id equals bundleID, or
+// fails closed once the attempts are exhausted. When the frontmost id can't be
+// read ("" — non-darwin, non-cgo, or unavailable) verification is skipped: the
+// check can only strengthen the guarantee, never fabricate one, so an
+// environment that can't report the frontmost app proceeds as before.
+func (w *DefaultWorker) awaitFrontmost(ctx context.Context, bundleID string) error {
+	var last string
+	for attempt := 0; attempt < frontmostAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		last = w.frontmost()
+		if last == "" || last == bundleID {
+			return nil // unverifiable, or confirmed frontmost
+		}
+		if err := w.sleep(ctx, w.retryInterval); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("capture: %s did not become frontmost (frontmost is %q); "+
+		"refusing to act on the wrong application", bundleID, last)
+}
+
 // run executes the pipeline and always closes ch after sending exactly one
 // terminal Update.
 func (w *DefaultWorker) run(ctx context.Context, req Request, ch chan<- Update) {
@@ -267,6 +303,16 @@ func (w *DefaultWorker) run(ctx context.Context, req Request, ch chan<- Update) 
 	}
 	if err := w.focuser.Focus(ctx, req.BundleIdentifier); err != nil {
 		w.fail(ctx, req, ch, fmt.Errorf("capture: focus %s: %w", req.BundleIdentifier, err))
+		return
+	}
+
+	// Activation is asynchronous and the accessibility walk grounds whichever
+	// app is actually frontmost, so confirm the requested app really did come to
+	// the front before screenshotting/walking. Otherwise a slow activation or a
+	// focus steal (a notification, the user clicking elsewhere) would silently
+	// ground — and let the model act on — the wrong, possibly unapproved, app.
+	if err := w.awaitFrontmost(ctx, req.BundleIdentifier); err != nil {
+		w.fail(ctx, req, ch, err)
 		return
 	}
 
