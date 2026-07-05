@@ -123,9 +123,23 @@ func toStateElement(el grounder.Element, index int) state.Element {
 
 	return state.Element{
 		Index:   index,
+		Role:    el.Role,
 		Label:   label,
 		Frame:   toRect(el.Box),
 		Actions: actions,
+	}
+}
+
+// isChrome reports whether a role is window-manager chrome (the menu bar and
+// its items) that spans the whole screen and should not define the app's window
+// box. Excluding it keeps the window frame — and the scroll/observe target
+// derived from it — over the actual application window.
+func isChrome(role string) bool {
+	switch role {
+	case "AXMenuBar", "AXMenuBarItem":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -140,24 +154,34 @@ func toRect(r action.Rect) state.Rect {
 	}
 }
 
-// boundingBox returns the smallest rect enclosing every child's frame, or
-// the zero Rect when there are no children.
+// boundingBox returns the smallest rect enclosing the app's window content: the
+// union of every child's frame except menu-bar chrome, which spans the full
+// screen width and would otherwise stretch the box across the whole display.
+// Falls back to all children if every child is chrome (or there are none).
 func boundingBox(children []state.Element) state.Rect {
-	if len(children) == 0 {
+	var frames []state.Rect
+	for _, c := range children {
+		if !isChrome(c.Role) {
+			frames = append(frames, c.Frame)
+		}
+	}
+	if len(frames) == 0 {
+		// All chrome or empty: fall back to every child so we still report a box.
+		for _, c := range children {
+			frames = append(frames, c.Frame)
+		}
+	}
+	if len(frames) == 0 {
 		return state.Rect{}
 	}
 
-	first := children[0].Frame
-	minX, minY := first.X, first.Y
-	maxX, maxY := first.X+first.Width, first.Y+first.Height
-
-	for _, c := range children[1:] {
-		f := c.Frame
+	minX, minY := frames[0].X, frames[0].Y
+	maxX, maxY := frames[0].X+frames[0].Width, frames[0].Y+frames[0].Height
+	for _, f := range frames[1:] {
 		minX = math.Min(minX, f.X)
 		minY = math.Min(minY, f.Y)
 		maxX = math.Max(maxX, f.X+f.Width)
 		maxY = math.Max(maxY, f.Y+f.Height)
 	}
-
 	return state.Rect{X: minX, Y: minY, Width: maxX - minX, Height: maxY - minY}
 }

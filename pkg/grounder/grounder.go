@@ -18,12 +18,17 @@ import (
 // number assigned to it; the executor resolves a set-of-marks click by looking
 // up ID in the Marker's index.
 type Element struct {
-	ID           int         `json:"id"`
-	Box          action.Rect `json:"box"`
-	Label        string      `json:"label,omitempty"`
-	Text         string      `json:"text,omitempty"`
-	Interactable bool        `json:"interactable"`
-	Confidence   float64     `json:"confidence"`
+	ID    int         `json:"id"`
+	Box   action.Rect `json:"box"`
+	Label string      `json:"label,omitempty"`
+	Text  string      `json:"text,omitempty"`
+	// Role is the source's own element role when it has one (e.g. an
+	// accessibility role like "AXButton"/"AXLink"); empty for detectors that
+	// don't expose one (a vision backend). Carried through so downstream
+	// consumers can filter/label by it.
+	Role         string  `json:"role,omitempty"`
+	Interactable bool    `json:"interactable"`
+	Confidence   float64 `json:"confidence"`
 }
 
 // Grounder detects UI elements in a screenshot.

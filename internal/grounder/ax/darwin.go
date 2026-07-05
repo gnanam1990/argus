@@ -66,11 +66,16 @@ const (
 	// ErrUnavailable instead and the chain grounder falls back to vision.
 	defaultTimeout = 5 * time.Second
 
-	// maxDepth and maxElements bound the JXA walk for latency: an unbounded
-	// walk of a deep or huge UI tree (e.g. a complex web page inside
-	// AXWebArea) could otherwise make a single Detect call take seconds.
-	maxDepth    = 8
-	maxElements = 400
+	// maxDepth and maxElements bound the walk for latency: an unbounded walk of
+	// a deep or huge UI tree could otherwise make a single Detect call take
+	// seconds. Depth 8 was too shallow for web/Electron content — a browser's
+	// in-page controls sit inside AXWebArea well below that (measured: Safari's
+	// page body links appear only past depth ~8), so app chrome grounded but the
+	// actual page did not. 24 reaches page content across Safari/Chrome/Electron
+	// while the element cap and the per-element AX messaging timeout keep a
+	// pathological tree bounded.
+	maxDepth    = 24
+	maxElements = 1200
 )
 
 // interactableRoles are the AXRole values that resolve to a clickable or
@@ -336,6 +341,7 @@ func mapElements(els []wireElement, sx, sy, ox, oy, refW, refH float64, filter b
 			Box:          box,
 			Label:        label,
 			Text:         e.Value,
+			Role:         e.Role,
 			Interactable: interactableRoles[e.Role] && e.Enabled,
 			Confidence:   1.0,
 		})

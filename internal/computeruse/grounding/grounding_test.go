@@ -100,6 +100,38 @@ func TestFrontmostTree_MapsFlatListToIndexedChildren(t *testing.T) {
 	}
 }
 
+func TestFrontmostTree_SurfacesRoleAndExcludesMenuBarFromWindowBox(t *testing.T) {
+	t.Parallel()
+
+	// A full-width menu bar plus a small app window off to one side. The window
+	// box must reflect the window, not stretch across the menu bar's width, and
+	// each child must carry its source role through.
+	els := []grounder.Element{
+		{ID: 0, Box: rect(0, 0, 2560, 24), Label: "menu", Role: "AXMenuBar"},
+		{ID: 1, Box: rect(0, 0, 120, 24), Label: "Apple", Role: "AXMenuBarItem"},
+		{ID: 2, Box: rect(900, 120, 1130, 240), Label: "7", Role: "AXButton", Interactable: true},
+		{ID: 3, Box: rect(900, 250, 1130, 400), Label: "Learn more", Role: "AXLink", Interactable: true},
+	}
+	p := grounding.New(fixedSource(els), fixedShot(action.Image{}))
+
+	got, err := p.FrontmostTree(context.Background(), "com.example.app")
+	if err != nil {
+		t.Fatalf("FrontmostTree: %v", err)
+	}
+
+	// Role is threaded through to each child.
+	if got.Children[2].Role != "AXButton" || got.Children[3].Role != "AXLink" {
+		t.Errorf("roles = %q,%q, want AXButton,AXLink", got.Children[2].Role, got.Children[3].Role)
+	}
+
+	// Window box excludes the menu-bar chrome: it spans the two app controls
+	// (x 900..1130, y 120..400), NOT the 2560-wide menu bar.
+	want := state.Rect{X: 900, Y: 120, Width: 230, Height: 280}
+	if got.Frame != want {
+		t.Errorf("window frame = %+v, want %+v (menu bar excluded)", got.Frame, want)
+	}
+}
+
 func TestFrontmostTree_FiltersZeroAreaAndInvertedBoxes(t *testing.T) {
 	t.Parallel()
 
