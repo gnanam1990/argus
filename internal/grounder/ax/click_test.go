@@ -66,3 +66,19 @@ func TestClickerUnexpectedOutput(t *testing.T) {
 		t.Fatal("unexpected output should error")
 	}
 }
+
+// A clicker bound to a non-primary display offsets the display-local point to
+// the global coordinate the AX hit-test uses.
+func TestClickerDisplayOffset(t *testing.T) {
+	t.Parallel()
+	fr := &fakeRunner{out: []byte("ok\n")}
+	c := ax.NewClicker(ax.WithRunner(fr), ax.WithDisplayBounds(4480, 0, 1920, 1080))
+	if err := c.Click(context.Background(), 100, 100); err != nil {
+		t.Fatalf("Click: %v", err)
+	}
+	s := scriptOf(fr)
+	// local (100,100) + origin (4480,0) → global (4580,100)
+	if !strings.Contains(s, "4580") {
+		t.Errorf("script should hit-test the global x 4580, got: %s", s)
+	}
+}

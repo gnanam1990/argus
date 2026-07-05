@@ -15,6 +15,7 @@ import (
 	"github.com/gnanam1990/argus/internal/computeruse/state"
 	"github.com/gnanam1990/argus/internal/config"
 	"github.com/gnanam1990/argus/internal/grounder/ax"
+	"github.com/gnanam1990/argus/pkg/computer"
 )
 
 // cuParts holds the platform-specific host implementations chosen by build tag
@@ -65,7 +66,16 @@ func BuildComputerUse(cfg config.Config) (*ComputerUse, func() error, error) {
 	}
 
 	loader := instructions.NewChainLoader(os.ReadFile, os.UserConfigDir)
-	provider := grounding.New(ax.HostSource(), comp.Screenshot)
+	// Ground against the same display the driver captures: pass its global
+	// bounds so accessibility frames map into the display's local space.
+	var axOpts []ax.HostOption
+	if db, ok := comp.(computer.DisplayBounder); ok {
+		x, y, w, h := db.DisplayBounds()
+		if w > 0 && h > 0 {
+			axOpts = append(axOpts, ax.WithDisplayBounds(x, y, w, h))
+		}
+	}
+	provider := grounding.New(ax.HostSource(axOpts...), comp.Screenshot)
 	act := actor.New(comp)
 
 	var wopts []capture.Option

@@ -253,8 +253,17 @@ func BuildComputer(ctx context.Context, cfg config.Config, getenv func(string) s
 		if cfg.Agent.Dispatch == "background" {
 			// Background clicks use the macOS accessibility press action; off
 			// macOS or without the permission it reports no target and the
-			// executor falls back to a cursor click.
-			sc.bgClick = ax.NewClicker()
+			// executor falls back to a cursor click. On a non-primary display,
+			// the clicker offsets the display-local point back to the global
+			// coordinate the AX hit-test uses.
+			var copts []ax.HostOption
+			if db, ok := sc.Computer.(computer.DisplayBounder); ok {
+				x, y, w, h := db.DisplayBounds()
+				if w > 0 && h > 0 {
+					copts = append(copts, ax.WithDisplayBounds(x, y, w, h))
+				}
+			}
+			sc.bgClick = ax.NewClicker(copts...)
 		}
 		return sc, func() error { return sb.Stop(context.Background()) }, nil
 	case "docker":

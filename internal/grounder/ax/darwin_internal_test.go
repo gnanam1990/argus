@@ -100,7 +100,7 @@ func TestMapElementsRoleAndEnabledFiltering(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			els := []wireElement{{Role: tt.role, Title: "x", X: 0, Y: 0, W: 10, H: 10, Enabled: tt.enabled}}
-			got := mapElements(els, 1, 1)
+			got := mapElements(els, 1, 1, 0, 0, 0, 0, false)
 			if len(got) != 1 {
 				t.Fatalf("got %d elements, want 1", len(got))
 			}
@@ -119,7 +119,7 @@ func TestMapElementsScaling(t *testing.T) {
 	t.Parallel()
 	sx, sy := 2880.0/1440.0, 1800.0/900.0
 	els := []wireElement{{Role: "AXButton", Title: "Save", X: 10, Y: 20, W: 80, H: 24, Enabled: true}}
-	got := mapElements(els, sx, sy)
+	got := mapElements(els, sx, sy, 0, 0, 0, 0, false)
 	if len(got) != 1 {
 		t.Fatalf("got %d elements, want 1", len(got))
 	}
@@ -133,7 +133,7 @@ func TestMapElementsScaling(t *testing.T) {
 func TestMapElementsIdentityScale(t *testing.T) {
 	t.Parallel()
 	els := []wireElement{{Role: "AXButton", Title: "Save", X: 10, Y: 20, W: 80, H: 24, Enabled: true}}
-	got := mapElements(els, 1, 1)
+	got := mapElements(els, 1, 1, 0, 0, 0, 0, false)
 	box := got[0].Box
 	if box.Min != (action.Point{X: 10, Y: 20}) || box.Max != (action.Point{X: 90, Y: 44}) {
 		t.Errorf("box = %+v, want an unscaled 1:1 box", box)
@@ -146,7 +146,7 @@ func TestMapElementsDropsZeroAreaBoxes(t *testing.T) {
 		{Role: "AXButton", Title: "ghost", X: 0, Y: 0, W: 0, H: 0, Enabled: true},
 		{Role: "AXButton", Title: "real", X: 0, Y: 0, W: 10, H: 10, Enabled: true},
 	}
-	got := mapElements(els, 1, 1)
+	got := mapElements(els, 1, 1, 0, 0, 0, 0, false)
 	if len(got) != 1 || got[0].Label != "real" {
 		t.Errorf("got %+v, want only the non-zero-area element", got)
 	}
@@ -158,7 +158,7 @@ func TestMapElementsLabelFallbackAndSequentialIDs(t *testing.T) {
 		{Role: "AXButton", Title: "Save", Value: "ignored", X: 0, Y: 0, W: 10, H: 10, Enabled: true},
 		{Role: "AXTextField", Title: "", Value: "current text", X: 20, Y: 0, W: 10, H: 10, Enabled: true},
 	}
-	got := mapElements(els, 1, 1)
+	got := mapElements(els, 1, 1, 0, 0, 0, 0, false)
 	if len(got) != 2 {
 		t.Fatalf("got %d elements, want 2", len(got))
 	}
@@ -238,5 +238,31 @@ func TestDecodeSizeDecodable(t *testing.T) {
 	w, h, ok := decodeSize(action.Image{MIME: action.MIMEPNG, Data: buf.Bytes()})
 	if !ok || w != 7 || h != 5 {
 		t.Errorf("decodeSize = (%d,%d,%v), want (7,5,true)", w, h, ok)
+	}
+}
+
+// TestMapElementsDisplayBounds covers the multi-display path: global-point
+// frames are offset into the target display's local space, scaled by that
+// display's size, and elements on other monitors are filtered out.
+func TestMapElementsDisplayBounds(t *testing.T) {
+	t.Parallel()
+	// Display at global origin (4480,0), size 1920x1080, non-retina screenshot
+	// (1920x1080) → scale 1.0, offset -4480 on x.
+	ox, oy, refW, refH := 4480.0, 0.0, 1920.0, 1080.0
+	sx, sy := 1920.0/refW, 1080.0/refH // = 1.0
+	els := []wireElement{
+		{Role: "AXButton", Title: "on-display", X: 4580, Y: 100, W: 80, H: 24, Enabled: true},   // local (100,100)
+		{Role: "AXButton", Title: "other-monitor", X: 200, Y: 100, W: 80, H: 24, Enabled: true}, // global x=200 → off this display
+	}
+	got := mapElements(els, sx, sy, ox, oy, refW, refH, true)
+	if len(got) != 1 {
+		t.Fatalf("got %d elements, want 1 (the off-display one filtered)", len(got))
+	}
+	if got[0].Label != "on-display" {
+		t.Errorf("kept %q, want on-display", got[0].Label)
+	}
+	// (4580-4480, 100) local, scale 1 → (100,100)-(180,124)
+	if got[0].Box.Min != (action.Point{X: 100, Y: 100}) || got[0].Box.Max != (action.Point{X: 180, Y: 124}) {
+		t.Errorf("box = %+v, want local (100,100)-(180,124)", got[0].Box)
 	}
 }

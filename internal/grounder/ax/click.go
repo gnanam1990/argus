@@ -16,16 +16,19 @@ import (
 type Clicker struct {
 	run     Runner
 	timeout time.Duration
+	ox, oy  int // display origin: local click coords are offset by this before the global AX hit-test
 }
 
 // NewClicker builds a Clicker. Options are shared with HostSource
-// (WithRunner / WithTimeout).
+// (WithRunner / WithTimeout / WithDisplayBounds — the clicker uses the bounds'
+// origin to map a display-local point back to the global coordinate the AX
+// hit-test expects).
 func NewClicker(opts ...HostOption) *Clicker {
 	h := &hostSource{run: ExecRunner{}, timeout: defaultTimeout}
 	for _, o := range opts {
 		o(h)
 	}
-	return &Clicker{run: h.run, timeout: h.timeout}
+	return &Clicker{run: h.run, timeout: h.timeout, ox: int(h.dispX), oy: int(h.dispY)}
 }
 
 // errNoTarget is returned when there is no actionable element at the point. The
@@ -51,7 +54,9 @@ func (c *Clicker) Click(ctx context.Context, x, y int) error {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	out, err := c.run.Run(ctx, "osascript", "-l", "JavaScript", "-e", clickScript(x, y))
+	// The AX hit-test is in whole-desktop global coordinates; map the
+	// display-local point the executor produced back to global.
+	out, err := c.run.Run(ctx, "osascript", "-l", "JavaScript", "-e", clickScript(x+c.ox, y+c.oy))
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if isAssistiveDenied(msg) || isAssistiveDenied(err.Error()) {

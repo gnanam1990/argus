@@ -76,6 +76,14 @@ func Displays() []DisplayInfo {
 // whole-desktop space robotgo's input functions expect.
 func (d *Driver) g(x, y int) (int, int) { return x + d.ox, y + d.oy }
 
+// DisplayBounds reports the driven display's global bounds in logical points,
+// so callers working in global coordinates (the accessibility path) can align
+// with the display this driver captures. Implements computer.DisplayBounder.
+func (d *Driver) DisplayBounds() (x, y, w, h int) {
+	_, _, w, h = robotgo.GetDisplayBounds(d.display)
+	return d.ox, d.oy, w, h
+}
+
 // Screenshot captures the target display and encodes it as PNG.
 func (d *Driver) Screenshot(_ context.Context) (action.Image, error) {
 	img, err := robotgo.CaptureImg(d.display)

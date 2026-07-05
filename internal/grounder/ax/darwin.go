@@ -106,9 +106,26 @@ func WithRunner(r Runner) HostOption { return func(h *hostSource) { h.run = r } 
 // WithTimeout overrides the default 5s osascript timeout.
 func WithTimeout(d time.Duration) HostOption { return func(h *hostSource) { h.timeout = d } }
 
+// WithDisplayBounds binds the tree source (and a Clicker built with the same
+// option) to a specific display given its global bounds in logical points
+// (x,y = top-left origin; w,h = size), as reported by the driver. Element
+// frames — which the accessibility API reports in whole-desktop global
+// coordinates — are then offset into that display's local space and scaled by
+// its size, and elements on other displays are filtered out, so marks align
+// with a per-display screenshot. Unset (the zero value) keeps the primary /
+// whole-desktop behavior.
+func WithDisplayBounds(x, y, w, h int) HostOption {
+	return func(hs *hostSource) {
+		hs.dispX, hs.dispY, hs.dispW, hs.dispH = float64(x), float64(y), float64(w), float64(h)
+	}
+}
+
 type hostSource struct {
 	run     Runner
 	timeout time.Duration
+
+	// display bounds in logical points (0,0,0,0 = unset → whole-desktop).
+	dispX, dispY, dispW, dispH float64
 }
 
 // HostSource returns a TreeSource backed by the real host's accessibility
@@ -141,12 +158,23 @@ func (h *hostSource) detect(ctx context.Context, img action.Image) ([]grounder.E
 		return nil, fmt.Errorf("ax: parse osascript output: %w: %v", ErrUnavailable, err)
 	}
 
-	sx, sy := 1.0, 1.0
-	if imgW, imgH, ok := decodeSize(img); ok && screen.W > 0 && screen.H > 0 {
-		sx = float64(imgW) / screen.W
-		sy = float64(imgH) / screen.H
+	// Choose the reference frame: a specific display when bounds are set, else
+	// the whole primary screen the JXA reported.
+	refW, refH := screen.W, screen.H
+	ox, oy := 0.0, 0.0
+	filter := false
+	if h.dispW > 0 && h.dispH > 0 {
+		refW, refH = h.dispW, h.dispH
+		ox, oy = h.dispX, h.dispY
+		filter = true
 	}
-	return mapElements(els, sx, sy), nil
+
+	sx, sy := 1.0, 1.0
+	if imgW, imgH, ok := decodeSize(img); ok && refW > 0 && refH > 0 {
+		sx = float64(imgW) / refW
+		sy = float64(imgH) / refH
+	}
+	return mapElements(els, sx, sy, ox, oy, refW, refH, filter), nil
 }
 
 // runError classifies a failed osascript invocation into an
@@ -224,21 +252,27 @@ func parseTree(out []byte) (wireScreen, []wireElement, error) {
 	return *payload.Screen, payload.Elements, nil
 }
 
-// mapElements converts wire elements (logical/point space) into
-// grounder.Element (screenshot-pixel space): it scales by (sx, sy),
+// mapElements converts wire elements (global logical/point space) into
+// grounder.Element (screenshot-pixel space): it offsets each element's frame
+// into the reference display's local space by (ox, oy), scales by (sx, sy),
 // classifies Interactable from role + enabled, and falls back to Value for
-// Label when Title is empty. IDs are assigned sequentially in walk order —
-// grounder.Renumber exists for callers that later compose multiple sources,
-// so this package doesn't need to deduplicate. Elements that resolve to a
-// zero-area box (attribute reads that all failed, or a genuinely
-// zero-size/hidden element) are dropped: they're not a usable set-of-marks
-// target either way.
-func mapElements(els []wireElement, sx, sy float64) []grounder.Element {
+// Label when Title is empty. When filter is set, elements that fall entirely
+// outside the reference display [0,refW]×[0,refH] (they live on another
+// monitor) are dropped. IDs are assigned sequentially in walk order —
+// grounder.Renumber exists for callers that later compose multiple sources, so
+// this package doesn't need to deduplicate. Elements that resolve to a
+// zero-area box (all attribute reads failed, or a genuinely zero-size/hidden
+// element) are dropped: they're not a usable set-of-marks target either way.
+func mapElements(els []wireElement, sx, sy, ox, oy, refW, refH float64, filter bool) []grounder.Element {
 	out := make([]grounder.Element, 0, len(els))
 	for _, e := range els {
+		lx, ly := e.X-ox, e.Y-oy // global point -> display-local point
+		if filter && (lx+e.W <= 0 || lx >= refW || ly+e.H <= 0 || ly >= refH) {
+			continue // fully off this display
+		}
 		box := action.Rect{
-			Min: action.Point{X: round(e.X * sx), Y: round(e.Y * sy)},
-			Max: action.Point{X: round((e.X + e.W) * sx), Y: round((e.Y + e.H) * sy)},
+			Min: action.Point{X: round(lx * sx), Y: round(ly * sy)},
+			Max: action.Point{X: round((lx + e.W) * sx), Y: round((ly + e.H) * sy)},
 		}
 		if box.Empty() {
 			continue

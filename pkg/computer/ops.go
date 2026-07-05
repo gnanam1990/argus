@@ -25,6 +25,16 @@ type FileWriter interface {
 	WriteFile(ctx context.Context, path string, data []byte) error
 }
 
+// DisplayBounder reports the global bounds (in logical points) of the display
+// the computer is driving: (x, y) top-left origin in the whole-desktop space,
+// and (w, h) size. It lets callers that also work in the global coordinate
+// space — e.g. the accessibility tree/hit-test — align with the display this
+// computer captures. A single-display or whole-desktop driver need not
+// implement it.
+type DisplayBounder interface {
+	DisplayBounds() (x, y, w, h int)
+}
+
 // BackgroundClicker presses the UI element at a screen point WITHOUT moving the
 // pointer — e.g. via the accessibility API's press action — so the agent can
 // drive an app while the operator keeps using the mouse. It returns
