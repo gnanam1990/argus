@@ -1,6 +1,7 @@
-// Command argus-mcp serves the Argus computer driver as MCP tools over stdio,
-// so any MCP client can capture the screen and drive mouse/keyboard through the
-// same driver the agent loop uses.
+// Command argus-mcp serves Argus as MCP tools over stdio. The default mode
+// exposes the raw computer driver (screenshot/click/type/…); --mode=computeruse
+// exposes the app-aware desktop computer-use tools (get_app_state, list_apps,
+// click-by-element, …) with per-app approval and a confirmation policy.
 package main
 
 import (
@@ -9,22 +10,34 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/gnanam1990/argus/internal/app"
+	"github.com/gnanam1990/argus/internal/config"
 	"github.com/gnanam1990/argus/internal/driver/shell"
 	"github.com/gnanam1990/argus/internal/mcpserver"
 	"github.com/gnanam1990/argus/internal/version"
 )
 
 func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "version", "--version", "-v":
+	mode, configPath := "driver", ""
+	for i := 1; i < len(os.Args); i++ {
+		arg := os.Args[i]
+		switch {
+		case arg == "version" || arg == "--version" || arg == "-v":
 			fmt.Println(version.String())
 			return
-		case "help", "--help", "-h":
+		case arg == "help" || arg == "--help" || arg == "-h":
 			fmt.Fprint(os.Stdout, usage)
 			return
+		case arg == "--mode" && i+1 < len(os.Args):
+			i++
+			mode = os.Args[i]
+		case arg == "--mode=computeruse":
+			mode = "computeruse"
+		case arg == "--config" && i+1 < len(os.Args):
+			i++
+			configPath = os.Args[i]
 		default:
-			fmt.Fprintf(os.Stderr, "argus-mcp: unknown argument %q\n", os.Args[1])
+			fmt.Fprintf(os.Stderr, "argus-mcp: unknown argument %q\n", arg)
 			os.Exit(1)
 		}
 	}
@@ -32,19 +45,41 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	srv := mcpserver.New(shell.New(), mcpserver.WithInfo("argus-mcp", version.String()))
-	if err := srv.Serve(ctx, os.Stdin, os.Stdout); err != nil && ctx.Err() == nil {
+	if err := serve(ctx, mode, configPath); err != nil && ctx.Err() == nil {
 		fmt.Fprintln(os.Stderr, "argus-mcp:", err)
 		os.Exit(1)
 	}
 }
 
-const usage = `argus-mcp - serve the Argus computer driver as MCP tools over stdio
+func serve(ctx context.Context, mode, configPath string) error {
+	switch mode {
+	case "computeruse":
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			return err
+		}
+		cu, cleanup, err := app.BuildComputerUse(cfg)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = cleanup() }()
+		return cu.Server.Serve(ctx, os.Stdin, os.Stdout)
+	case "driver", "":
+		srv := mcpserver.New(shell.New(), mcpserver.WithInfo("argus-mcp", version.String()))
+		return srv.Serve(ctx, os.Stdin, os.Stdout)
+	default:
+		return fmt.Errorf("unknown --mode %q (want \"driver\" or \"computeruse\")", mode)
+	}
+}
+
+const usage = `argus-mcp - serve Argus as MCP tools over stdio
 
 Usage:
-  argus-mcp            Serve MCP over stdin/stdout (X11 shell driver)
-  argus-mcp version    Print version
+  argus-mcp                                 Serve the raw driver tools (X11 shell)
+  argus-mcp --mode=computeruse [--config F] Serve app-aware desktop computer-use tools (macOS)
+  argus-mcp version                         Print version
 
-Point an MCP client at this command to expose screenshot/click/type/key/
-scroll/move/cursor_position tools.
+Driver mode exposes screenshot/click/type/key/scroll/move/cursor_position.
+Computer-use mode exposes get_app_state/list_apps/click/type_text/press_key/
+scroll/drag/perform_secondary_action, gated by per-app approval and permissions.
 `

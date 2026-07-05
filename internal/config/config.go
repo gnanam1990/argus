@@ -18,10 +18,20 @@ import (
 
 // Config is the full agent configuration (secrets excluded).
 type Config struct {
-	Provider  Provider  `json:"provider"`
-	Agent     Agent     `json:"agent"`
-	Grounding Grounding `json:"grounding"`
-	Sandbox   Sandbox   `json:"sandbox"`
+	Provider    Provider    `json:"provider"`
+	Agent       Agent       `json:"agent"`
+	Grounding   Grounding   `json:"grounding"`
+	Sandbox     Sandbox     `json:"sandbox"`
+	ComputerUse ComputerUse `json:"computer_use,omitempty"`
+}
+
+// ComputerUse configures the app-aware desktop computer-use subsystem (macOS).
+type ComputerUse struct {
+	Enabled           bool     `json:"enabled"`
+	AutoApproveApps   []string `json:"auto_approve_apps,omitempty"` // bundle ids pre-approved at startup
+	RequireConfirm    bool     `json:"require_confirmation"`        // route risky actions to the approver
+	InstructionDirs   []string `json:"instruction_dirs,omitempty"`  // extra per-app instruction dirs
+	MaxCaptureTimeout int      `json:"max_capture_timeout_ms"`      // capture worker timeout (ms); 0 = default 120000
 }
 
 // Provider selects and configures the model adapter.
@@ -164,6 +174,9 @@ func (c Config) Validate() error {
 	}
 	if c.Agent.Dispatch != "" && c.Agent.Dispatch != "cursor" && c.Agent.Dispatch != "background" {
 		return fmt.Errorf("config: agent.dispatch must be \"cursor\" or \"background\", got %q", c.Agent.Dispatch)
+	}
+	if c.ComputerUse.MaxCaptureTimeout < 0 {
+		return fmt.Errorf("config: computer_use.max_capture_timeout_ms must be non-negative")
 	}
 	if !groundingModes[c.Grounding.Mode] {
 		return fmt.Errorf("config: unknown grounding mode %q", c.Grounding.Mode)

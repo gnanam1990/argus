@@ -13,6 +13,8 @@ import (
 
 	sdkopt "github.com/anthropics/anthropic-sdk-go/option"
 
+	"github.com/gnanam1990/argus/internal/computeruse/confirm"
+	"github.com/gnanam1990/argus/internal/computeruse/policy"
 	"github.com/gnanam1990/argus/internal/config"
 	"github.com/gnanam1990/argus/internal/grounder/ax"
 	"github.com/gnanam1990/argus/internal/grounder/chain"
@@ -224,6 +226,12 @@ func BuildMiddleware(cfg config.Config, secrets []string, log *slog.Logger, runI
 			opts = append(opts, middleware.WithUSDBudget(cfg.Provider.Model, cfg.Agent.BudgetUSD))
 		}
 		mw = append(mw, middleware.NewBudget(opts...))
+	}
+	if cfg.ComputerUse.RequireConfirm {
+		// Classify each action by the computer-use risk taxonomy and route
+		// risky ones to the same approver (hand-off actions are refused). A nil
+		// approver fails closed.
+		mw = append(mw, confirm.NewConfirmation(policy.DefaultClassifier{}, approver))
 	}
 	return mw
 }

@@ -144,14 +144,20 @@ func TestHostGuardianUnlocked(t *testing.T) {
 	}
 }
 
-func TestHostGuardianIndeterminateIsPending(t *testing.T) {
+// A successful ioreg read with no lock marker means the screen is unlocked
+// (the key is commonly absent while unlocked); it must NOT be treated as
+// pending, or every capture would stall on a normal unlocked screen.
+func TestHostGuardianAbsentKeyIsUnlocked(t *testing.T) {
 	t.Parallel()
 	fr := &fakeRunner{out: []byte("no such key here\n")}
 	g := permissions.NewHostGuardian(permissions.WithRunner(fr))
 
-	_, err := g.IsLocked(context.Background())
-	if !errors.Is(err, permissions.ErrPending) {
-		t.Fatalf("IsLocked() error = %v, want ErrPending", err)
+	locked, err := g.IsLocked(context.Background())
+	if err != nil {
+		t.Fatalf("IsLocked() error = %v, want nil", err)
+	}
+	if locked {
+		t.Error("IsLocked() = true, want false (no lock marker present)")
 	}
 }
 

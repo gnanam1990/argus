@@ -99,10 +99,13 @@ func NewHostChecker(opts ...HostOption) *HostChecker {
 // prompting: AXIsProcessTrusted() (ApplicationServices) and
 // CGPreflightScreenCaptureAccess() (CoreGraphics), each guarded by try/catch
 // so a bridge failure on either one doesn't take down the other's result.
+// CGPreflightScreenCaptureAccess is not auto-exposed on the JXA bridge, so it
+// is bound explicitly via ObjC.bindFunction — importing CoreGraphics alone
+// leaves the symbol undefined (and every read would falsely report "missing").
 const permissionsJXA = `function run() {
   var acc = false, scr = false;
   try { ObjC.import('ApplicationServices'); acc = $.AXIsProcessTrusted() === true; } catch (e1) {}
-  try { ObjC.import('CoreGraphics'); scr = $.CGPreflightScreenCaptureAccess() === true; } catch (e2) {}
+  try { ObjC.bindFunction('CGPreflightScreenCaptureAccess', ['bool', []]); scr = $.CGPreflightScreenCaptureAccess() === true; } catch (e2) {}
   return JSON.stringify({accessibility: acc, screenRecording: scr});
 }
 `
@@ -154,8 +157,7 @@ func NewHostGuardian(opts ...HostOption) *HostGuardian {
 // lockedKey and unlockedKey are the two forms ioreg's text dump uses for the
 // IOKit registry's screen-lock flag.
 const (
-	lockedKey   = `"CGSSessionScreenIsLocked" = 1`
-	unlockedKey = `"CGSSessionScreenIsLocked" = 0`
+	lockedKey = `"CGSSessionScreenIsLocked" = 1`
 )
 
 // IsLocked runs `ioreg -n Root -d1 -l` and looks for the screen-lock key in
@@ -173,13 +175,12 @@ func (h *HostGuardian) IsLocked(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("permissions: ioreg failed checking screen-lock state: %w", err)
 	}
 
-	text := string(out)
-	switch {
-	case strings.Contains(text, lockedKey):
+	// A successful ioreg read is authoritative: the lock key is present and 1
+	// only while the screen is locked. Its absence (a common unlocked state) or
+	// an explicit 0 both mean unlocked — only a failed/timed-out read is
+	// genuinely indeterminate (handled above as ErrPending).
+	if strings.Contains(string(out), lockedKey) {
 		return true, nil
-	case strings.Contains(text, unlockedKey):
-		return false, nil
-	default:
-		return false, fmt.Errorf("permissions: could not determine screen-lock state from ioreg output: %w", ErrPending)
 	}
+	return false, nil
 }
