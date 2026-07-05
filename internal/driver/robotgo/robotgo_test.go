@@ -151,6 +151,20 @@ func TestTranslateKeysPropagatesFirstError(t *testing.T) {
 	}
 }
 
+// TestMoveSettleIsPositive locks in the dropped-click fix: robotgo.Move warps
+// the cursor asynchronously, so a button event posted in the same breath lands
+// at the pre-move location and macOS drops it (the pointer visibly reaches the
+// target yet nothing is pressed). moveTo waits moveSettleMS between the warp
+// and the event to avoid that race; a zero settle reintroduces the bug, so this
+// guards against anyone tuning it back down to nothing. Live testing showed
+// 40ms sufficient; the constant keeps a margin above that.
+func TestMoveSettleIsPositive(t *testing.T) {
+	t.Parallel()
+	if moveSettleMS < 40 {
+		t.Fatalf("moveSettleMS = %d; must stay >= 40ms or synthetic clicks get dropped after a move", moveSettleMS)
+	}
+}
+
 // TestDisplayOffset verifies the local->global coordinate mapping used for
 // multi-monitor input: a driver bound to a display with a non-zero origin adds
 // that origin to every input coordinate (and Screenshot/ScreenSize/Cursor stay

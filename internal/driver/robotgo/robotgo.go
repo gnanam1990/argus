@@ -76,6 +76,23 @@ func Displays() []DisplayInfo {
 // whole-desktop space robotgo's input functions expect.
 func (d *Driver) g(x, y int) (int, int) { return x + d.ox, y + d.oy }
 
+// moveSettleMS is how long to wait after warping the cursor before posting a
+// button or scroll event. robotgo.Move warps the pointer asynchronously; a
+// click issued in the same breath posts before the warp is registered and
+// carries the pre-move location, so macOS drops it (the pointer visibly lands
+// on the target yet nothing is pressed). A short settle makes the following
+// event land at the moved position. 40ms sufficed in testing; 80ms is a safe
+// margin under load and is negligible for interactive computer-use pacing.
+const moveSettleMS = 80
+
+// moveTo warps the cursor to the global position for (x, y) and lets the warp
+// register before the caller posts a button/scroll event. Use this instead of
+// a bare robotgo.Move wherever an input event immediately follows the move.
+func (d *Driver) moveTo(x, y int) {
+	robotgo.Move(d.g(x, y))
+	robotgo.MilliSleep(moveSettleMS)
+}
+
 // DisplayBounds reports the driven display's global bounds in logical points,
 // so callers working in global coordinates (the accessibility path) can align
 // with the display this driver captures. Implements computer.DisplayBounder.
@@ -113,7 +130,7 @@ func (d *Driver) MoveMouse(_ context.Context, x, y int) error {
 
 // Click moves to (x,y) and clicks `clicks` times.
 func (d *Driver) Click(_ context.Context, x, y int, b action.Button, clicks int) error {
-	robotgo.Move(d.g(x, y))
+	d.moveTo(x, y)
 	if clicks <= 0 {
 		clicks = 1
 	}
@@ -127,7 +144,7 @@ func (d *Driver) Click(_ context.Context, x, y int, b action.Button, clicks int)
 
 // MouseDown presses a button at (x,y).
 func (d *Driver) MouseDown(_ context.Context, x, y int, b action.Button) error {
-	robotgo.Move(d.g(x, y))
+	d.moveTo(x, y)
 	if err := robotgo.Toggle(buttonName(b), "down"); err != nil {
 		return fmt.Errorf("robotgo mousedown: %w", err)
 	}
@@ -136,26 +153,29 @@ func (d *Driver) MouseDown(_ context.Context, x, y int, b action.Button) error {
 
 // MouseUp releases a button at (x,y).
 func (d *Driver) MouseUp(_ context.Context, x, y int, b action.Button) error {
-	robotgo.Move(d.g(x, y))
+	d.moveTo(x, y)
 	if err := robotgo.Toggle(buttonName(b), "up"); err != nil {
 		return fmt.Errorf("robotgo mouseup: %w", err)
 	}
 	return nil
 }
 
-// Drag presses at the first point, moves through the rest, and releases.
+// Drag presses at the first point, moves through the rest, and releases. The
+// press and release each follow a settle so neither is dropped; intermediate
+// waypoints move without a settle to keep the drag smooth.
 func (d *Driver) Drag(_ context.Context, path []action.Point, b action.Button) error {
 	if len(path) < 2 {
 		return fmt.Errorf("robotgo: drag needs >= 2 points")
 	}
 	name := buttonName(b)
-	robotgo.Move(d.g(path[0].X, path[0].Y))
+	d.moveTo(path[0].X, path[0].Y)
 	if err := robotgo.Toggle(name, "down"); err != nil {
 		return fmt.Errorf("robotgo drag down: %w", err)
 	}
 	for _, p := range path[1:] {
 		robotgo.Move(d.g(p.X, p.Y))
 	}
+	robotgo.MilliSleep(moveSettleMS)
 	if err := robotgo.Toggle(name, "up"); err != nil {
 		return fmt.Errorf("robotgo drag up: %w", err)
 	}
@@ -164,7 +184,7 @@ func (d *Driver) Drag(_ context.Context, path []action.Point, b action.Button) e
 
 // Scroll moves to (x,y) and scrolls by (dx,dy).
 func (d *Driver) Scroll(_ context.Context, x, y, dx, dy int) error {
-	robotgo.Move(d.g(x, y))
+	d.moveTo(x, y)
 	rx, ry := scrollArgs(dx, dy)
 	robotgo.Scroll(rx, ry)
 	return nil
