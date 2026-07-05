@@ -12,7 +12,6 @@ import (
 
 	"github.com/gnanam1990/argus/internal/app"
 	"github.com/gnanam1990/argus/internal/config"
-	"github.com/gnanam1990/argus/internal/driver/shell"
 	"github.com/gnanam1990/argus/internal/mcpserver"
 	"github.com/gnanam1990/argus/internal/version"
 )
@@ -71,7 +70,16 @@ func serve(ctx context.Context, mode, configPath string) error {
 		defer func() { _ = cleanup() }()
 		return cu.Server.Serve(ctx, os.Stdin, os.Stdout)
 	case "driver", "":
-		srv := mcpserver.New(shell.New(), mcpserver.WithInfo("argus-mcp", version.String()))
+		// Use the same platform-correct selection as the main binary (robotgo /
+		// Wayland / X11 shell by build and session) — a hardcoded X11 driver
+		// here was silently non-functional on macOS, Windows, and Wayland.
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			return err
+		}
+		comp := app.HostDriver(cfg.Sandbox.Display, cfg.ComputerUse.IsSmoothCursor())
+		defer func() { _ = comp.Close() }()
+		srv := mcpserver.New(comp, mcpserver.WithInfo("argus-mcp", version.String()))
 		return srv.Serve(ctx, os.Stdin, os.Stdout)
 	default:
 		return fmt.Errorf("unknown --mode %q (want \"driver\" or \"computeruse\")", mode)
@@ -81,7 +89,7 @@ func serve(ctx context.Context, mode, configPath string) error {
 const usage = `argus-mcp - serve Argus as MCP tools over stdio
 
 Usage:
-  argus-mcp                                 Serve the raw driver tools (X11 shell)
+  argus-mcp [--config F]                    Serve the raw driver tools (native/Wayland/X11 by platform)
   argus-mcp --mode=computeruse [--config F] Serve app-aware desktop computer-use tools (macOS)
   argus-mcp version                         Print version
 

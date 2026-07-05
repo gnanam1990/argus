@@ -1,4 +1,4 @@
-//go:build !robotgo && !darwin
+//go:build !robotgo && !darwin && !windows
 
 package app
 

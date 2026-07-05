@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/gnanam1990/argus/internal/platform"
@@ -15,10 +16,16 @@ import (
 func displayServer() string { return platform.DisplayServer() }
 
 // preflight validates the host can actually be driven by the default backend.
-// On Wayland that's the ydotool-based driver (so a Wayland session is allowed,
-// unlike the X11-only platform.Preflight, provided ydotool is installed); on
-// X11 it's the shell driver.
+// On macOS/Windows the CGo-free build has no working backend at all, so say
+// that (and the fix) instead of a misleading X11 message. On Wayland the
+// ydotool-based driver applies (so a Wayland session is allowed, unlike the
+// X11-only platform.Preflight, provided ydotool is installed); on X11 it's the
+// shell driver.
 func preflight() error {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		return fmt.Errorf("platform: this build has no native %s backend (CGo-free X11 build) — "+
+			"rebuild with `make build-robotgo` (CGO_ENABLED=1 go build -tags robotgo)", runtime.GOOS)
+	}
 	if platform.IsWayland() {
 		if _, err := exec.LookPath("ydotool"); err != nil {
 			return fmt.Errorf("platform: Wayland session but 'ydotool' is not installed — " +
@@ -33,6 +40,9 @@ func preflight() error {
 // captureCheck verifies the active backend's external tools are installed, so
 // doctor catches a missing binary before the first real run does.
 func captureCheck() string {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		return "no native backend in this build — rebuild with `make build-robotgo`"
+	}
 	if platform.IsWayland() {
 		return waylandToolCheck()
 	}

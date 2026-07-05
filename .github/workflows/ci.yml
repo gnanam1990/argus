@@ -92,7 +92,7 @@ jobs:
       # The native driver + its CLI wiring are CGo + build-tagged; validate they
       # compile on a real macOS runner (excluded from the default matrix).
       - name: go build -tags robotgo
-        run: CGO_ENABLED=1 go build -tags robotgo ./internal/driver/robotgo/ ./cmd/argus/
+        run: CGO_ENABLED=1 go build -tags robotgo ./internal/driver/robotgo/ ./cmd/argus/ ./cmd/argus-mcp/
       - name: go test -tags robotgo
         run: CGO_ENABLED=1 go test -tags robotgo ./internal/driver/robotgo/... ./internal/grounder/ax/...
       # The default Lint job runs staticcheck without build tags, so it never
@@ -101,6 +101,26 @@ jobs:
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@latest
           CGO_ENABLED=1 "$(go env GOPATH)/bin/staticcheck" -tags robotgo ./internal/driver/robotgo/... ./internal/grounder/ax/...
+
+  robotgo-windows:
+    name: Build robotgo backend (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+      # The Windows native path was previously never compiled anywhere; the
+      # runner ships a MinGW gcc for the CGo build.
+      - name: go build -tags robotgo
+        run: go build -tags robotgo ./internal/driver/robotgo/ ./cmd/argus/ ./cmd/argus-mcp/
+        env:
+          CGO_ENABLED: "1"
+      - name: go test -tags robotgo
+        run: go test -tags robotgo ./internal/driver/robotgo/...
+        env:
+          CGO_ENABLED: "1"
 
   hygiene:
     name: Repo hygiene
