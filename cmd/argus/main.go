@@ -268,6 +268,10 @@ func doctor(args []string, out io.Writer) error {
 	if capStatus := captureCheck(); capStatus != "" {
 		fmt.Fprintln(out, "  screen capture:", capStatus)
 	}
+	if disp := displaysInfo(); disp != "" {
+		fmt.Fprintln(out, "  displays:      ", disp)
+		fmt.Fprintf(out, "                  driving display %d (set sandbox.display to change)\n", cfg.Sandbox.Display)
+	}
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintln(out, "  config:        ", err)
 	} else {

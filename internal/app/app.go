@@ -245,7 +245,7 @@ func BuildMiddleware(cfg config.Config, secrets []string, log *slog.Logger, runI
 func BuildComputer(ctx context.Context, cfg config.Config, getenv func(string) string) (computer.Computer, func() error, error) {
 	switch cfg.Sandbox.Kind {
 	case "host":
-		sb, err := host.New(hostDriver()).Provision(ctx, sandbox.Spec{})
+		sb, err := host.New(hostDriver(cfg.Sandbox.Display)).Provision(ctx, sandbox.Spec{})
 		if err != nil {
 			return nil, nil, err
 		}

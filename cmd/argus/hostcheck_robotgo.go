@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"strings"
 
 	"github.com/gnanam1990/argus/internal/driver/robotgo"
 )
@@ -37,4 +38,22 @@ func captureCheck() string {
 		return msg
 	}
 	return fmt.Sprintf("ok (%d bytes)", len(img.Data))
+}
+
+// displaysInfo lists the attached displays so doctor can show a multi-monitor
+// layout and which index to set as sandbox.display.
+func displaysInfo() string {
+	ds := robotgo.Displays()
+	if len(ds) <= 1 {
+		return ""
+	}
+	parts := make([]string, 0, len(ds))
+	for _, d := range ds {
+		tag := ""
+		if d.Primary {
+			tag = " *primary"
+		}
+		parts = append(parts, fmt.Sprintf("[%d] %dx%d @(%d,%d)%s", d.Index, d.W, d.H, d.X, d.Y, tag))
+	}
+	return strings.Join(parts, "  ")
 }

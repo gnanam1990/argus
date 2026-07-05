@@ -40,3 +40,7 @@ func captureCheck() string {
 	}
 	return ""
 }
+
+// displaysInfo is empty on the X11 build: the shell driver captures the whole
+// virtual screen, so there is no per-display selection to report.
+func displaysInfo() string { return "" }

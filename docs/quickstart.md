@@ -96,6 +96,30 @@ screenshot payload, not the driver. Two `agent` settings help:
   (`examples/config/host-anthropic.json`) — purpose-built, snappy tool calls,
   no grounding overhead.
 
+## Multiple displays (macOS)
+
+The native driver drives **one display at a time** — it captures that display,
+sizes it, and offsets clicks by its global origin so they land on the right
+screen. By default it drives the primary (display 0). `argus doctor` lists them:
+
+```
+displays:  [0] 2560x1080 @(0,0) *primary  [1] 1920x1080 @(2560,0)  [2] 1920x1080 @(4480,0)
+           driving display 0 (set sandbox.display to change)
+```
+
+To drive another monitor, set its index in the config:
+
+```json
+{ "sandbox": { "kind": "host", "display": 2 } }
+```
+
+- Put the app you want to control on the display you select (the agent only
+  sees that one screen).
+- **Caveat:** display *indices* are assigned by macOS and aren't guaranteed
+  stable across reboots or monitor reconnects — re-run `argus doctor` to confirm
+  the mapping. (Accessibility grounding, `grounding: ax`, still targets the
+  primary display for now.)
+
 ## Skills — teach the agent how to behave
 
 A **skill** is reusable guidance prepended to the system prompt for a task, so

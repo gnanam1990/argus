@@ -21,17 +21,64 @@ import (
 	"github.com/gnanam1990/argus/pkg/computer"
 )
 
-// Driver drives the host via robotgo.
-type Driver struct{}
+// Driver drives the host via robotgo. It targets a single display (index 0 =
+// primary): it captures and sizes that display, and offsets every input by the
+// display's global origin so a click in the captured frame lands on the right
+// screen in a multi-monitor layout.
+type Driver struct {
+	display int
+	ox, oy  int // the target display's global (logical) origin
+}
 
-// New builds a robotgo driver.
-func New() *Driver { return &Driver{} }
+// Option configures a Driver.
+type Option func(*Driver)
+
+// WithDisplay selects which display to drive (0 = primary). An out-of-range
+// index falls back to the primary.
+func WithDisplay(n int) Option { return func(d *Driver) { d.display = n } }
+
+// New builds a robotgo driver, resolving the target display's global origin so
+// input coordinates (which robotgo interprets in the whole-desktop space) are
+// offset from the captured display's local space.
+func New(opts ...Option) *Driver {
+	d := &Driver{}
+	for _, o := range opts {
+		o(d)
+	}
+	if d.display < 0 || d.display >= robotgo.DisplaysNum() {
+		d.display = 0
+	}
+	d.ox, d.oy, _, _ = robotgo.GetDisplayBounds(d.display)
+	return d
+}
 
 var _ computer.Computer = (*Driver)(nil)
 
-// Screenshot captures the screen and encodes it as PNG.
+// DisplayInfo is one monitor's index and global bounds (logical points).
+type DisplayInfo struct {
+	Index      int
+	X, Y, W, H int
+	Primary    bool
+}
+
+// Displays lists every attached display and its global bounds, for diagnostics.
+func Displays() []DisplayInfo {
+	n := robotgo.DisplaysNum()
+	out := make([]DisplayInfo, 0, n)
+	for i := 0; i < n; i++ {
+		x, y, w, h := robotgo.GetDisplayBounds(i)
+		out = append(out, DisplayInfo{Index: i, X: x, Y: y, W: w, H: h, Primary: x == 0 && y == 0})
+	}
+	return out
+}
+
+// g maps a coordinate in the captured display's local space to the global
+// whole-desktop space robotgo's input functions expect.
+func (d *Driver) g(x, y int) (int, int) { return x + d.ox, y + d.oy }
+
+// Screenshot captures the target display and encodes it as PNG.
 func (d *Driver) Screenshot(_ context.Context) (action.Image, error) {
-	img, err := robotgo.CaptureImg()
+	img, err := robotgo.CaptureImg(d.display)
 	if err != nil {
 		return action.Image{}, captureError(err)
 	}
@@ -42,21 +89,23 @@ func (d *Driver) Screenshot(_ context.Context) (action.Image, error) {
 	return action.Image{MIME: action.MIMEPNG, Data: buf.Bytes()}, nil
 }
 
-// ScreenSize returns the primary display size.
+// ScreenSize returns the target display's logical size. The executor derives
+// the model→screen scale from this versus the captured pixel dimensions, so a
+// HiDPI display is handled the same way as the primary.
 func (d *Driver) ScreenSize(_ context.Context) (int, int, error) {
-	w, h := robotgo.GetScreenSize()
+	_, _, w, h := robotgo.GetDisplayBounds(d.display)
 	return w, h, nil
 }
 
 // MoveMouse moves the pointer.
 func (d *Driver) MoveMouse(_ context.Context, x, y int) error {
-	robotgo.Move(x, y)
+	robotgo.Move(d.g(x, y))
 	return nil
 }
 
 // Click moves to (x,y) and clicks `clicks` times.
 func (d *Driver) Click(_ context.Context, x, y int, b action.Button, clicks int) error {
-	robotgo.Move(x, y)
+	robotgo.Move(d.g(x, y))
 	if clicks <= 0 {
 		clicks = 1
 	}
@@ -70,7 +119,7 @@ func (d *Driver) Click(_ context.Context, x, y int, b action.Button, clicks int)
 
 // MouseDown presses a button at (x,y).
 func (d *Driver) MouseDown(_ context.Context, x, y int, b action.Button) error {
-	robotgo.Move(x, y)
+	robotgo.Move(d.g(x, y))
 	if err := robotgo.Toggle(buttonName(b), "down"); err != nil {
 		return fmt.Errorf("robotgo mousedown: %w", err)
 	}
@@ -79,7 +128,7 @@ func (d *Driver) MouseDown(_ context.Context, x, y int, b action.Button) error {
 
 // MouseUp releases a button at (x,y).
 func (d *Driver) MouseUp(_ context.Context, x, y int, b action.Button) error {
-	robotgo.Move(x, y)
+	robotgo.Move(d.g(x, y))
 	if err := robotgo.Toggle(buttonName(b), "up"); err != nil {
 		return fmt.Errorf("robotgo mouseup: %w", err)
 	}
@@ -92,12 +141,12 @@ func (d *Driver) Drag(_ context.Context, path []action.Point, b action.Button) e
 		return fmt.Errorf("robotgo: drag needs >= 2 points")
 	}
 	name := buttonName(b)
-	robotgo.Move(path[0].X, path[0].Y)
+	robotgo.Move(d.g(path[0].X, path[0].Y))
 	if err := robotgo.Toggle(name, "down"); err != nil {
 		return fmt.Errorf("robotgo drag down: %w", err)
 	}
 	for _, p := range path[1:] {
-		robotgo.Move(p.X, p.Y)
+		robotgo.Move(d.g(p.X, p.Y))
 	}
 	if err := robotgo.Toggle(name, "up"); err != nil {
 		return fmt.Errorf("robotgo drag up: %w", err)
@@ -107,7 +156,7 @@ func (d *Driver) Drag(_ context.Context, path []action.Point, b action.Button) e
 
 // Scroll moves to (x,y) and scrolls by (dx,dy).
 func (d *Driver) Scroll(_ context.Context, x, y, dx, dy int) error {
-	robotgo.Move(x, y)
+	robotgo.Move(d.g(x, y))
 	rx, ry := scrollArgs(dx, dy)
 	robotgo.Scroll(rx, ry)
 	return nil
@@ -192,10 +241,12 @@ func (d *Driver) KeyUp(_ context.Context, key string) error {
 	return nil
 }
 
-// CursorPosition returns the pointer location.
+// CursorPosition returns the pointer location in the target display's local
+// space (global position minus the display origin), matching the coordinate
+// space of Screenshot/ScreenSize.
 func (d *Driver) CursorPosition(_ context.Context) (int, int, error) {
 	x, y := robotgo.GetMousePos()
-	return x, y, nil
+	return x - d.ox, y - d.oy, nil
 }
 
 // Close is a no-op.

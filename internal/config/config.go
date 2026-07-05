@@ -74,6 +74,7 @@ type Sandbox struct {
 	Image     string `json:"image,omitempty"`
 	HostPort  int    `json:"host_port"`
 	GuestPort int    `json:"guest_port"`
+	Display   int    `json:"display,omitempty"` // host display index to drive (0 = primary); macOS robotgo build
 }
 
 // Defaults returns the baseline configuration.
@@ -186,6 +187,9 @@ func (c Config) Validate() error {
 	}
 	if !sandboxKinds[c.Sandbox.Kind] {
 		return fmt.Errorf("config: unknown sandbox kind %q", c.Sandbox.Kind)
+	}
+	if c.Sandbox.Display < 0 {
+		return fmt.Errorf("config: sandbox.display must be non-negative")
 	}
 	if c.Agent.BudgetTokens < 0 || c.Agent.BudgetUSD < 0 {
 		return fmt.Errorf("config: budgets must be non-negative")
