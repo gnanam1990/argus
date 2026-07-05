@@ -24,8 +24,8 @@ func TestDefaultHTTPClientHasHeaderTimeoutNoBodyTimeout(t *testing.T) {
 	if !ok || tr == nil {
 		t.Fatalf("Transport = %#v, want *http.Transport", p.http.Transport)
 	}
-	if tr.ResponseHeaderTimeout != 60*time.Second {
-		t.Errorf("ResponseHeaderTimeout = %s, want 60s", tr.ResponseHeaderTimeout)
+	if tr.ResponseHeaderTimeout != 120*time.Second {
+		t.Errorf("ResponseHeaderTimeout = %s, want 120s", tr.ResponseHeaderTimeout)
 	}
 }
 

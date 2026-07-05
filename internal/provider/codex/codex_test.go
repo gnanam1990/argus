@@ -567,3 +567,44 @@ func TestResultTextIncludesCursorPosition(t *testing.T) {
 		t.Errorf("2nd request missing cursor coordinates:\n%s", body)
 	}
 }
+
+// Reasoning items must be bounded: over many turns the accumulated
+// encrypted_content blobs would otherwise blow up every request (a run reached
+// ~144k tokens in the field). Only the newest few are replayed.
+func TestReasoningItemsBounded(t *testing.T) {
+	t.Parallel()
+	// Each turn emits a reasoning item (with encrypted_content) plus a
+	// function_call. After many turns the request must carry at most a bounded
+	// number of reasoning items.
+	turns := make([]string, 0, 12)
+	for i := 0; i < 12; i++ {
+		turns = append(turns, sse(
+			`{"type":"response.output_item.added","output_index":0,"item":{"id":"rs_`+itoa(i)+`","type":"reasoning"}}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"id":"rs_`+itoa(i)+`","type":"reasoning","encrypted_content":"BLOB`+itoa(i)+`"}}`,
+			`{"type":"response.output_item.added","output_index":1,"item_id":"i`+itoa(i)+`","item":{"type":"function_call","call_id":"call_`+itoa(i)+`","name":"computer"}}`,
+			`{"type":"response.function_call_arguments.delta","item_id":"i`+itoa(i)+`","delta":"{\"action\":\"click\",\"x\":1,\"y\":1}"}`,
+			`{"type":"response.output_item.done","output_index":1,"item_id":"i`+itoa(i)+`","item":{"type":"function_call","call_id":"call_`+itoa(i)+`"}}`,
+			completedUsage,
+		))
+	}
+	srv, bodies := sequentialServer(t, turns...)
+	p := codex.New(codex.WithBaseURL(srv.URL), codex.WithTokenSource(staticToken("AT", "ACCT")))
+
+	conv := &model.Conversation{}
+	for i := 0; i < 12; i++ {
+		conv.AddUser(model.Text("go"))
+		turn, err := p.Step(context.Background(), conv)
+		if err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+		conv.Add(turn.Message)
+		conv.AddTool(model.ActionResult(turn.ActionUses()[0].CallID, action.Result{Output: "ok"}))
+	}
+
+	last := (*bodies)[len(*bodies)-1]
+	if n := strings.Count(last, "BLOB"); n > 6 {
+		t.Errorf("final request carries %d reasoning blobs, want <= 6 (unbounded growth)", n)
+	}
+}
+
+func itoa(i int) string { return string(rune('0' + i)) }

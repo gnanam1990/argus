@@ -86,7 +86,11 @@ func New(opts ...Option) *Provider {
 func defaultHTTPClient() *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
-			ResponseHeaderTimeout: 60 * time.Second,
+			// A reasoning model on a large context can take a while to emit the
+			// first response header (it reasons before streaming), so this is
+			// generous — it only guards against a truly wedged connection, not
+			// slow-but-progressing generation.
+			ResponseHeaderTimeout: 120 * time.Second,
 			Proxy:                 http.ProxyFromEnvironment,
 		},
 	}
@@ -107,6 +111,7 @@ func (p *Provider) Step(ctx context.Context, conv *model.Conversation, opts ...m
 
 	p.encodeNew(conv)
 	p.pruneImages()
+	p.pruneReasoning()
 
 	// NOTE: the ChatGPT Codex backend rejects max_output_tokens
 	// ("Unsupported parameter"), unlike the API-key Responses endpoint, so the
@@ -214,6 +219,39 @@ func (p *Provider) encodeNew(conv *model.Conversation) {
 
 // prunedImagePlaceholder replaces a pruned screenshot's content part.
 const prunedImagePlaceholder = "[screenshot pruned]"
+
+// keepReasoning bounds how many reasoning items are replayed. Each carries a
+// large encrypted_content blob; only the most recent turns' reasoning aids
+// continuity, and older turns' function_calls are already resolved by their
+// tool results, so keeping them all just inflates every subsequent request
+// (a long run otherwise grows to six figures of tokens).
+const keepReasoning = 6
+
+// pruneReasoning drops all but the newest keepReasoning reasoning items from
+// the private history. Reasoning items are standalone (no call_id pairing), so
+// removing old ones cannot orphan a function_call/function_call_output pair.
+func (p *Provider) pruneReasoning() {
+	total := 0
+	for _, it := range p.input {
+		if item, ok := it.(map[string]any); ok && item["type"] == "reasoning" {
+			total++
+		}
+	}
+	drop := total - keepReasoning
+	if drop <= 0 {
+		return
+	}
+	out := make([]any, 0, len(p.input))
+	dropped := 0
+	for _, it := range p.input {
+		if item, ok := it.(map[string]any); ok && item["type"] == "reasoning" && dropped < drop {
+			dropped++
+			continue
+		}
+		out = append(out, it)
+	}
+	p.input = out
+}
 
 // pruneImages replaces all but the newest imageRetention input_image parts in
 // the private history with a small input_text placeholder, oldest first, so
