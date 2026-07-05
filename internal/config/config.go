@@ -37,11 +37,20 @@ type ComputerUse struct {
 	RequireConfirm    bool     `json:"require_confirmation"`        // route risky actions to the approver
 	InstructionDirs   []string `json:"instruction_dirs,omitempty"`  // extra per-app instruction dirs
 	MaxCaptureTimeout int      `json:"max_capture_timeout_ms"`      // capture worker timeout (ms); 0 = default 120000
+	// SmoothCursor animates the pointer along an eased path to each target
+	// instead of warping it instantly, so a watching operator can follow what
+	// the agent is doing. Pointer nil defaults to on; set false for the fastest
+	// (instant-warp) motion in headless/automated runs. Use IsSmoothCursor.
+	SmoothCursor *bool `json:"smooth_cursor,omitempty"`
 }
 
 // IsEnabled reports whether the computer-use subsystem is allowed to run. An
 // unset Enabled (nil) defaults to true; only an explicit false disables it.
 func (c ComputerUse) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
+
+// IsSmoothCursor reports whether pointer motion should be animated. Unset (nil)
+// defaults to true; only an explicit false disables it.
+func (c ComputerUse) IsSmoothCursor() bool { return c.SmoothCursor == nil || *c.SmoothCursor }
 
 // Provider selects and configures the model adapter.
 type Provider struct {

@@ -16,7 +16,7 @@ import (
 // fails only at first use, so warn loudly at construction to turn a silent
 // footgun into an obvious one. Rebuild with `make build-robotgo` (or
 // `-tags robotgo`, CGO enabled) for the native per-display backend.
-func hostDriver(_ int) computer.Computer {
+func hostDriver(_ int, _ bool) computer.Computer {
 	fmt.Fprintln(os.Stderr, "argus: WARNING — built without -tags robotgo on macOS; "+
 		"desktop control and screen capture are non-functional (the X11 shell driver "+
 		"has no backend here). Rebuild with `make build-robotgo`.")

@@ -8,8 +8,8 @@ import (
 )
 
 // hostDriver returns the native robotgo host driver (macOS/Windows) for the
-// given display index (0 = primary). Selected when the binary is built with
-// -tags robotgo.
-func hostDriver(display int) computer.Computer {
-	return robotgo.New(robotgo.WithDisplay(display))
+// given display index (0 = primary). smooth animates pointer motion. Selected
+// when the binary is built with -tags robotgo.
+func hostDriver(display int, smooth bool) computer.Computer {
+	return robotgo.New(robotgo.WithDisplay(display), robotgo.WithSmooth(smooth))
 }

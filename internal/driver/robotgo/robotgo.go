@@ -10,6 +10,7 @@ package robotgo
 import (
 	"context"
 	"fmt"
+	"math"
 	"runtime"
 	"strings"
 
@@ -25,6 +26,9 @@ import (
 // screen in a multi-monitor layout.
 type Driver struct {
 	display int
+	// smooth animates the pointer along an eased path to each target instead of
+	// warping instantly, so a watching operator can follow the motion.
+	smooth bool
 	// bounds resolves a display's global logical bounds. It's a field (not a
 	// direct robotgo call) so it's queried live on every use — handling a
 	// mid-run display rearrange — and can be faked in tests. Defaults to
@@ -38,6 +42,10 @@ type Option func(*Driver)
 // WithDisplay selects which display to drive (0 = primary). An out-of-range
 // index falls back to the primary.
 func WithDisplay(n int) Option { return func(d *Driver) { d.display = n } }
+
+// WithSmooth enables (or disables) animated pointer motion. When on, the cursor
+// glides to each target over a short eased path instead of warping instantly.
+func WithSmooth(on bool) Option { return func(d *Driver) { d.smooth = on } }
 
 // New builds a robotgo driver for the given display. The display's global
 // origin is resolved live on each input/capture call (see origin) rather than
@@ -104,11 +112,67 @@ const moveSettleMS = 80
 // motion events over time rather than an instantaneous jump.
 const dragStepMS = 16
 
-// moveTo warps the cursor to the global position for (x, y) and lets the warp
+const (
+	// glidePxStep is the target travel per interpolation step; the step count is
+	// distance/glidePxStep so long moves aren't jerky and short ones stay quick.
+	glidePxStep = 22
+	// glideStepMS is the pause between interpolation steps (drives the visible
+	// speed); glideMaxStep caps steps so a cross-screen move can't drag on.
+	glideStepMS  = 8
+	glideMaxStep = 60
+)
+
+// easeInOut is smoothstep: eases the motion in and out so the glide accelerates
+// and decelerates instead of moving at a constant, robotic rate.
+func easeInOut(t float64) float64 { return t * t * (3 - 2*t) }
+
+// glidePath returns the intermediate points from (cx,cy) to (gx,gy) for an
+// eased glide, always ending exactly on (gx,gy). Pure so it can be tested
+// without touching real hardware.
+func glidePath(cx, cy, gx, gy int) []action.Point {
+	dist := math.Hypot(float64(gx-cx), float64(gy-cy))
+	steps := int(dist) / glidePxStep
+	if steps < 1 {
+		steps = 1
+	}
+	if steps > glideMaxStep {
+		steps = glideMaxStep
+	}
+	pts := make([]action.Point, 0, steps)
+	for i := 1; i <= steps; i++ {
+		t := easeInOut(float64(i) / float64(steps))
+		pts = append(pts, action.Point{
+			X: cx + int(math.Round(float64(gx-cx)*t)),
+			Y: cy + int(math.Round(float64(gy-cy)*t)),
+		})
+	}
+	// Guarantee the last point is exactly the target (rounding could fall short).
+	if n := len(pts); n == 0 || pts[n-1] != (action.Point{X: gx, Y: gy}) {
+		pts = append(pts, action.Point{X: gx, Y: gy})
+	}
+	return pts
+}
+
+// warpTo moves the pointer to global (gx,gy): a single warp, or an animated
+// glide from the current position when smooth motion is enabled.
+func (d *Driver) warpTo(gx, gy int) {
+	if !d.smooth {
+		robotgo.Move(gx, gy)
+		return
+	}
+	cx, cy := robotgo.Location()
+	for _, p := range glidePath(cx, cy, gx, gy) {
+		robotgo.Move(p.X, p.Y)
+		robotgo.MilliSleep(glideStepMS)
+	}
+}
+
+// moveTo moves the cursor to the global position for (x, y) and lets the move
 // register before the caller posts a button/scroll event. Use this instead of
 // a bare robotgo.Move wherever an input event immediately follows the move.
 func (d *Driver) moveTo(x, y int) {
-	robotgo.Move(d.g(x, y))
+	gx, gy := d.g(x, y)
+	d.warpTo(gx, gy)
 	robotgo.MilliSleep(moveSettleMS)
 }
 
@@ -135,9 +199,10 @@ func (d *Driver) ScreenSize(_ context.Context) (int, int, error) {
 	return w, h, nil
 }
 
-// MoveMouse moves the pointer.
+// MoveMouse moves the pointer (glides when smooth motion is enabled).
 func (d *Driver) MoveMouse(_ context.Context, x, y int) error {
-	robotgo.Move(d.g(x, y))
+	gx, gy := d.g(x, y)
+	d.warpTo(gx, gy)
 	return nil
 }
 
@@ -186,7 +251,14 @@ func (d *Driver) Drag(_ context.Context, path []action.Point, b action.Button) e
 		return fmt.Errorf("robotgo drag down: %w", err)
 	}
 	for _, p := range path[1:] {
-		robotgo.Move(d.g(p.X, p.Y))
+		gx, gy := d.g(p.X, p.Y)
+		if d.smooth {
+			// Glide the held-button motion so the drag is visible and emits a
+			// stream of mouseDragged events (glidePath already paces itself).
+			d.warpTo(gx, gy)
+			continue
+		}
+		robotgo.Move(gx, gy)
 		// Space the intermediate motion over real wall-clock time: many drag
 		// targets (HTML5 drag-and-drop, canvas apps, Finder) drive their state
 		// machine off a stream of mouseDragged events and ignore a burst of

@@ -2,7 +2,11 @@
 
 package robotgo
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/gnanam1990/argus/pkg/action"
+)
 
 // TestScrollArgsNegatesBothAxes locks in H1: robotgo.Scroll runs the opposite
 // sign convention from our canonical DX/DY (positive DY down, positive DX
@@ -181,6 +185,36 @@ func TestDisplayOffset(t *testing.T) {
 	p := &Driver{display: 0, bounds: func(int) (int, int, int, int) { return 0, 0, 2560, 1080 }}
 	if gx, gy := p.g(100, 200); gx != 100 || gy != 200 {
 		t.Errorf("primary g(100,200) = (%d,%d), want (100,200)", gx, gy)
+	}
+}
+
+// TestGlidePath verifies the animated-move interpolation: it ends exactly on
+// the target, progresses monotonically toward it, and takes multiple steps for
+// a long move (so the motion is visibly smooth, not a warp).
+func TestGlidePath(t *testing.T) {
+	t.Parallel()
+	pts := glidePath(0, 0, 440, 0)
+	if len(pts) < 5 {
+		t.Fatalf("got %d steps for a 440px move, want several for a smooth glide", len(pts))
+	}
+	last := pts[len(pts)-1]
+	if last != (action.Point{X: 440, Y: 0}) {
+		t.Errorf("final point = %+v, want the exact target (440,0)", last)
+	}
+	prev := -1
+	for i, p := range pts {
+		if p.X < prev {
+			t.Errorf("step %d x=%d went backwards (prev %d); path must progress toward target", i, p.X, prev)
+		}
+		if p.X > 440 {
+			t.Errorf("step %d x=%d overshot the target", i, p.X)
+		}
+		prev = p.X
+	}
+
+	// A zero-distance move still yields exactly the target (no empty path).
+	if got := glidePath(100, 100, 100, 100); len(got) == 0 || got[len(got)-1] != (action.Point{X: 100, Y: 100}) {
+		t.Errorf("zero-distance glide = %+v, want a single point at the target", got)
 	}
 }
 

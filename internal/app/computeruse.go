@@ -50,7 +50,7 @@ func PermissionOrchestrator() permissions.Orchestrator {
 // accessibility grounding, actor, and the async capture worker behind an MCP
 // server. The returned cleanup closes the host driver.
 func BuildComputerUse(cfg config.Config) (*ComputerUse, func() error, error) {
-	comp := hostDriver(cfg.Sandbox.Display)
+	comp := hostDriver(cfg.Sandbox.Display, cfg.ComputerUse.IsSmoothCursor())
 	plat := cuPlatform()
 	orch := permissions.New(plat.checker, plat.guardian)
 
