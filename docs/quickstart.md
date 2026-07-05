@@ -239,11 +239,22 @@ automatically (1.0.x long/short flags, legacy positional) and its errors carry
 ydotool's own stderr, so a misconfiguration names the fix instead of just an
 exit status.
 
-Notes and current limits: pointer position can't be read back on Wayland
-(`CursorPosition` is unsupported); coordinates are screenshot pixels, so a
-fractional-scaling setup may need calibration; wheel scrolling needs
-ydotool >= 1.0. Every command is overridable if your `ydotool`/screenshot tool
-differs.
+**Click accuracy.** ydotool's "absolute" move isn't truly absolute — it warps
+to a corner then moves *relative*, so the compositor's pointer acceleration
+skews where the cursor lands (large targets still get hit; small controls get
+missed, and the agent then retries — e.g. re-opening an app instead of clicking
+a menu item). On **Hyprland** and **Sway** the driver instead uses the
+compositor's exact cursor placement (`hyprctl dispatch movecursor` /
+`swaymsg seat - cursor set`), which is immune to acceleration, and maps
+screenshot pixels to logical points using the output scale. `argus doctor`
+prints which backend is active (`wayland pointer: hyprland (exact)` vs
+`ydotool (relative — acceleration may skew clicks)`). Force it with
+`ARGUS_WL_POINTER=hyprland|sway|ydotool`. On other compositors, if clicks miss,
+**disable pointer acceleration** for the session.
+
+Other limits: pointer position can't be read back (`CursorPosition` is
+unsupported); wheel scrolling needs ydotool >= 1.0. Every command is overridable
+if your `ydotool`/screenshot tool differs.
 
 ### macOS / Windows
 

@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/gnanam1990/argus/internal/driver/wayland"
 	"github.com/gnanam1990/argus/internal/platform"
 )
 
@@ -125,6 +126,12 @@ func ydotoolSocketIssue() string {
 		`sudo ydotoold --socket-own="$(id -u):$(id -g)")`
 }
 
-// displaysInfo is empty on the X11 build: the shell driver captures the whole
-// virtual screen, so there is no per-display selection to report.
-func displaysInfo() string { return "" }
+// displaysInfo reports the Wayland pointer backend (which decides click
+// accuracy) so doctor makes it visible; empty on X11, where the shell driver
+// captures the whole virtual screen with no per-display selection.
+func displaysInfo() string {
+	if platform.IsWayland() {
+		return "wayland pointer: " + wayland.PointerBackend()
+	}
+	return ""
+}

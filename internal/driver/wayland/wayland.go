@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gnanam1990/argus/pkg/action"
 	"github.com/gnanam1990/argus/pkg/computer"
@@ -70,6 +71,13 @@ type Driver struct {
 	readFile func(string) ([]byte, error)
 	tempFile func() (string, func(), error)
 
+	// pointer is how the cursor is positioned (compositor-exact vs ydotool).
+	pointer pointerKind
+	// settle waits after a move before a button event so the cursor position
+	// has registered — otherwise a click can post at the pre-move location.
+	// Injectable so tests don't actually sleep.
+	settle func()
+
 	// mu guards the resolved-syntax caches below. ydotool's CLI differs across
 	// versions/builds (long vs short flags, positional coords), so the first
 	// successful argv shape per operation is probed once and reused.
@@ -94,6 +102,16 @@ func WithCaptureCommand(name string, args ...string) Option {
 	return func(d *Driver) { d.capture = []captureCmd{{name, args}} }
 }
 
+// withPointer forces the positioning backend (tests).
+func withPointer(k pointerKind) Option { return func(d *Driver) { d.pointer = k } }
+
+// withSettle overrides the post-move settle (tests use a no-op).
+func withSettle(f func()) Option { return func(d *Driver) { d.settle = f } }
+
+// clickSettleMS is the pause between positioning the cursor and pressing a
+// button, so the move has registered before the click posts.
+const clickSettleMS = 60
+
 // New builds a Wayland driver.
 func New(opts ...Option) *Driver {
 	d := &Driver{
@@ -102,6 +120,8 @@ func New(opts ...Option) *Driver {
 		capture:    defaultCaptureChain,
 		readFile:   os.ReadFile,
 		tempFile:   defaultTempFile,
+		pointer:    detectPointer(osGetenv),
+		settle:     func() { time.Sleep(clickSettleMS * time.Millisecond) },
 		moveStyle:  -1,
 		wheelStyle: -1,
 	}
@@ -275,20 +295,23 @@ func (d *Driver) ScreenSize(ctx context.Context) (int, int, error) {
 	return cfg.Width, cfg.Height, nil
 }
 
-// MoveMouse moves the pointer to absolute (x,y), adapting to whichever
-// mousemove syntax the installed ydotool speaks.
+// MoveMouse positions the pointer at (x,y) — screenshot-pixel coordinates —
+// using the compositor's exact placement when available, else ydotool.
 func (d *Driver) MoveMouse(ctx context.Context, x, y int) error {
-	return d.runAdaptive(ctx, &d.moveStyle, moveStyles, x, y, "mousemove")
+	return d.moveCursor(ctx, x, y)
 }
 
-// Click moves to (x,y) and clicks the button `clicks` times.
+// Click moves to (x,y), lets the move settle, then clicks the button `clicks`
+// times. The settle matters: without it the button event can post before the
+// cursor move has registered, landing the click at the old position.
 func (d *Driver) Click(ctx context.Context, x, y int, b action.Button, clicks int) error {
 	if clicks <= 0 {
 		clicks = 1
 	}
-	if err := d.MoveMouse(ctx, x, y); err != nil {
+	if err := d.moveCursor(ctx, x, y); err != nil {
 		return err
 	}
+	d.settle()
 	for i := 0; i < clicks; i++ {
 		if err := d.yd(ctx, "click", clickCode(b)); err != nil {
 			return err
@@ -299,17 +322,19 @@ func (d *Driver) Click(ctx context.Context, x, y int, b action.Button, clicks in
 
 // MouseDown presses a button at (x,y).
 func (d *Driver) MouseDown(ctx context.Context, x, y int, b action.Button) error {
-	if err := d.MoveMouse(ctx, x, y); err != nil {
+	if err := d.moveCursor(ctx, x, y); err != nil {
 		return err
 	}
+	d.settle()
 	return d.yd(ctx, "click", downCode(b))
 }
 
 // MouseUp releases a button at (x,y).
 func (d *Driver) MouseUp(ctx context.Context, x, y int, b action.Button) error {
-	if err := d.MoveMouse(ctx, x, y); err != nil {
+	if err := d.moveCursor(ctx, x, y); err != nil {
 		return err
 	}
+	d.settle()
 	return d.yd(ctx, "click", upCode(b))
 }
 
@@ -318,16 +343,18 @@ func (d *Driver) Drag(ctx context.Context, path []action.Point, b action.Button)
 	if len(path) < 2 {
 		return fmt.Errorf("wayland: drag needs >= 2 points")
 	}
-	if err := d.MoveMouse(ctx, path[0].X, path[0].Y); err != nil {
+	if err := d.moveCursor(ctx, path[0].X, path[0].Y); err != nil {
 		return err
 	}
+	d.settle()
 	if err := d.yd(ctx, "click", downCode(b)); err != nil {
 		return err
 	}
 	for _, p := range path[1:] {
-		if err := d.MoveMouse(ctx, p.X, p.Y); err != nil {
+		if err := d.moveCursor(ctx, p.X, p.Y); err != nil {
 			return err
 		}
+		d.settle()
 	}
 	return d.yd(ctx, "click", upCode(b))
 }

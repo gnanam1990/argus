@@ -45,7 +45,11 @@ func (f *fakeRunner) last() []string {
 func joined(argv []string) string { return strings.Join(argv, " ") }
 
 func newTest(fr *fakeRunner, opts ...Option) *Driver {
-	return New(append([]Option{WithRunner(fr)}, opts...)...)
+	// Force the ydotool pointer + a no-op settle so tests are deterministic and
+	// don't sleep, regardless of the host's compositor env. Tests that exercise
+	// the compositor path pass withPointer(...) after these.
+	base := []Option{WithRunner(fr), withPointer(pointerYdotool), withSettle(func() {})}
+	return New(append(base, opts...)...)
 }
 
 func TestMoveMouseAbsolute(t *testing.T) {
@@ -335,6 +339,97 @@ func TestWithYdotoolOverride(t *testing.T) {
 	}
 	if fr.last()[0] != "/opt/ydotool" {
 		t.Errorf("binary = %q, want the override", fr.last()[0])
+	}
+}
+
+func TestDetectPointer(t *testing.T) {
+	env := func(m map[string]string) func(string) string {
+		return func(k string) string { return m[k] }
+	}
+	cases := []struct {
+		name string
+		m    map[string]string
+		want pointerKind
+	}{
+		{"hyprland", map[string]string{"HYPRLAND_INSTANCE_SIGNATURE": "abc"}, pointerHyprland},
+		{"sway", map[string]string{"SWAYSOCK": "/run/sway.sock"}, pointerSway},
+		{"none", map[string]string{}, pointerYdotool},
+		{"override", map[string]string{"HYPRLAND_INSTANCE_SIGNATURE": "abc", "ARGUS_WL_POINTER": "ydotool"}, pointerYdotool},
+	}
+	for _, c := range cases {
+		if got := detectPointer(env(c.m)); got != c.want {
+			t.Errorf("%s: detectPointer = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestHyprlandExactPositioning(t *testing.T) {
+	// scale 1.0: click coords pass straight through to hyprctl movecursor.
+	fr := &fakeRunner{out: map[string][]byte{
+		"hyprctl": []byte(`[{"focused":true,"scale":1.0}]`),
+	}}
+	d := newTest(fr, withPointer(pointerHyprland))
+	if err := d.Click(context.Background(), 840, 300, action.Left, 1); err != nil {
+		t.Fatal(err)
+	}
+	var moved, clicked bool
+	for _, c := range fr.calls {
+		if c[0] == "hyprctl" && len(c) >= 5 && c[1] == "dispatch" && c[2] == "movecursor" && c[3] == "840" && c[4] == "300" {
+			moved = true
+		}
+		if c[0] == "ydotool" && len(c) >= 2 && c[1] == "click" {
+			clicked = true
+		}
+	}
+	if !moved {
+		t.Errorf("expected `hyprctl dispatch movecursor 840 300`, calls=%v", fr.calls)
+	}
+	if !clicked {
+		t.Error("expected the button press to still go through ydotool")
+	}
+}
+
+func TestHyprlandScaleMapsCoords(t *testing.T) {
+	// scale 2.0 (HiDPI): a screenshot-pixel (1000,500) must map to logical
+	// (500,250) before hyprctl, or the click lands at 2x the intended offset.
+	fr := &fakeRunner{out: map[string][]byte{
+		"hyprctl": []byte(`[{"focused":true,"scale":2.0}]`),
+	}}
+	d := newTest(fr, withPointer(pointerHyprland))
+	if err := d.MoveMouse(context.Background(), 1000, 500); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range fr.calls {
+		if c[0] == "hyprctl" && len(c) >= 3 && c[2] == "movecursor" {
+			got = c
+		}
+	}
+	if len(got) < 5 || got[3] != "500" || got[4] != "250" {
+		t.Errorf("movecursor args = %v, want logical 500 250 (scale 2.0)", got)
+	}
+}
+
+func TestPointerFallsBackToYdotoolOnCompositorError(t *testing.T) {
+	// hyprctl fails at runtime → the move must fall back to ydotool, not error.
+	fr := &errRunner{failWhen: func(argv string) error {
+		if strings.HasPrefix(argv, "hyprctl") {
+			return errors.New("hyprctl: connection failed")
+		}
+		return nil
+	}}
+	d := newTest(&fr.fakeRunner, WithRunner(fr), withPointer(pointerHyprland))
+	if err := d.MoveMouse(context.Background(), 10, 20); err != nil {
+		t.Fatalf("should fall back, not fail: %v", err)
+	}
+	sawYdotool := false
+	for _, c := range fr.calls {
+		if c[0] == "ydotool" && len(c) >= 2 && c[1] == "mousemove" {
+			sawYdotool = true
+		}
+	}
+	if !sawYdotool {
+		t.Errorf("expected ydotool fallback after hyprctl failure, calls=%v", fr.calls)
 	}
 }
 
