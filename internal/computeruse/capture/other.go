@@ -1,9 +1,9 @@
 //go:build !darwin
 
-// Non-macOS placeholders. Activation and running-app enumeration via
-// osascript/System Events are macOS-specific, so on every other platform
-// NoopFocuser reports an unsupported error (there is no real app to bring
-// forward, and pretending to succeed would let a caller act blind) while
+// Package capture provides non-macOS placeholders. Activation and running-app
+// enumeration via osascript/System Events are macOS-specific, so on every other
+// platform NoopFocuser reports an unsupported error (there is no real app to
+// bring forward, and pretending to succeed would let a caller act blind) while
 // NoopAppLister reports an empty, error-free list (there is nothing to list,
 // but that's not a failure in itself).
 package capture

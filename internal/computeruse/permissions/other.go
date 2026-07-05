@@ -1,7 +1,8 @@
 //go:build !darwin
 
-// Non-macOS placeholder detection. This package's real value only exists on
-// macOS (the permissions and lock-state concepts here are macOS-specific:
+// Package permissions provides non-macOS placeholder detection here. Its real
+// value only exists on macOS (the permissions and lock-state concepts are
+// macOS-specific:
 // System Settings > Privacy & Security has no equivalent elsewhere), so on
 // every other platform detection can't actually be performed. Rather than
 // fail every Ensure call outright — which would make the driver unusable
