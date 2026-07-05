@@ -1,0 +1,15 @@
+{
+  "provider": {
+    "kind": "anthropic",
+    "model": "claude-opus-4-8",
+    "max_tokens": 4096
+  },
+  "agent": {
+    "max_steps": 40,
+    "retain_images": 3,
+    "require_approval": true,
+    "dispatch": "background"
+  },
+  "grounding": { "mode": "none" },
+  "sandbox": { "kind": "host" }
+}

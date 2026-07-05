@@ -96,6 +96,31 @@ screenshot payload, not the driver. Two `agent` settings help:
   (`examples/config/host-anthropic.json`) — purpose-built, snappy tool calls,
   no grounding overhead.
 
+## Dispatch: background clicks (macOS, no cursor takeover)
+
+By default the agent moves your real pointer to click. Set `dispatch:
+"background"` to instead press elements via the macOS accessibility API — **no
+cursor movement**, so you can keep using your mouse while the agent works:
+
+```json
+{ "agent": { "dispatch": "background" } }
+```
+
+```sh
+argus run --config examples/config/host-anthropic-background.json "check the settings panel"
+```
+
+- **Requires** the **Accessibility** permission for your terminal (System
+  Settings → Privacy & Security → Accessibility), then a restart. Without it,
+  each click gracefully falls back to a cursor click.
+- Works on elements the accessibility tree exposes (buttons, menu items,
+  links, checkboxes). Anything else — arbitrary pixels, canvas/WebGL, games —
+  falls back to a normal cursor click automatically.
+- Typing still goes to the focused app. Only single left clicks use background
+  dispatch; double/right clicks and drags use the cursor.
+- For **full isolation** (the agent never touches your host at all), run it
+  against a Linux desktop in a container instead: `sandbox.kind: "docker"`.
+
 ## Interactive view (`--tui`)
 
 Add `--tui` to watch the run in a live full-screen view: a header with the

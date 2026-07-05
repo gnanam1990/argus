@@ -24,3 +24,12 @@ type FileReader interface {
 type FileWriter interface {
 	WriteFile(ctx context.Context, path string, data []byte) error
 }
+
+// BackgroundClicker presses the UI element at a screen point WITHOUT moving the
+// pointer — e.g. via the accessibility API's press action — so the agent can
+// drive an app while the operator keeps using the mouse. It returns
+// ErrNoBackgroundTarget when there is no actionable element at that point, so
+// the executor can fall back to a normal cursor click.
+type BackgroundClicker interface {
+	BackgroundClick(ctx context.Context, x, y int) error
+}

@@ -47,6 +47,7 @@ type Agent struct {
 	Capabilities      []string `json:"capabilities,omitempty"`
 	RequireApproval   bool     `json:"require_approval"`
 	RetainImages      int      `json:"retain_images"`
+	Dispatch          string   `json:"dispatch,omitempty"` // cursor (default) | background (macOS accessibility press, no pointer move)
 }
 
 // Grounding configures the set-of-marks detector.
@@ -159,6 +160,9 @@ func (c Config) Validate() error {
 	}
 	if c.Agent.ScreenshotMaxEdge != 0 && c.Agent.ScreenshotMaxEdge < 480 {
 		return fmt.Errorf("config: agent.screenshot_max_edge must be 0 (off) or >= 480")
+	}
+	if c.Agent.Dispatch != "" && c.Agent.Dispatch != "cursor" && c.Agent.Dispatch != "background" {
+		return fmt.Errorf("config: agent.dispatch must be \"cursor\" or \"background\", got %q", c.Agent.Dispatch)
 	}
 	if !groundingModes[c.Grounding.Mode] {
 		return fmt.Errorf("config: unknown grounding mode %q", c.Grounding.Mode)

@@ -71,6 +71,19 @@ func TestValidateScreenshotKnobs(t *testing.T) {
 	}
 }
 
+func TestValidateDispatch(t *testing.T) {
+	t.Parallel()
+	c := Defaults()
+	c.Agent.Dispatch = "background"
+	if err := c.Validate(); err != nil {
+		t.Errorf("background dispatch should be valid: %v", err)
+	}
+	c.Agent.Dispatch = "teleport"
+	if err := c.Validate(); err == nil {
+		t.Error("an unknown dispatch mode should be rejected")
+	}
+}
+
 // A USD budget on a model with no pinned rate enforces nothing — reject it up
 // front instead of silently running uncapped.
 func TestValidateBudgetUSDNeedsPricing(t *testing.T) {

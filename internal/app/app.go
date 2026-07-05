@@ -239,7 +239,14 @@ func BuildComputer(ctx context.Context, cfg config.Config, getenv func(string) s
 		if err != nil {
 			return nil, nil, err
 		}
-		return newSandboxComputer(sb), func() error { return sb.Stop(context.Background()) }, nil
+		sc := newSandboxComputer(sb)
+		if cfg.Agent.Dispatch == "background" {
+			// Background clicks use the macOS accessibility press action; off
+			// macOS or without the permission it reports no target and the
+			// executor falls back to a cursor click.
+			sc.bgClick = ax.NewClicker()
+		}
+		return sc, func() error { return sb.Stop(context.Background()) }, nil
 	case "docker":
 		opts := []docker.Option{
 			docker.WithImage(cfg.Sandbox.Image),
@@ -260,14 +267,33 @@ func BuildComputer(ctx context.Context, cfg config.Config, getenv func(string) s
 
 // sandboxComputer bridges a sandbox's gated exec/file operations onto its
 // computer, satisfying the pkg/computer Commander/FileReader/FileWriter
-// optional interfaces the executor dispatches gated actions through.
+// optional interfaces the executor dispatches gated actions through. When a
+// background clicker is set it also satisfies BackgroundClicker.
 type sandboxComputer struct {
 	computer.Computer
-	sb sandbox.Sandbox
+	sb      sandbox.Sandbox
+	bgClick *ax.Clicker // optional; nil unless background dispatch is configured
 }
 
 func newSandboxComputer(sb sandbox.Sandbox) sandboxComputer {
 	return sandboxComputer{Computer: sb.Computer(), sb: sb}
+}
+
+// BackgroundClick implements computer.BackgroundClicker via the accessibility
+// press action. No clicker, no element at the point, or a missing Accessibility
+// permission all report no target, so the executor falls back to a cursor click
+// (a missing permission degrades gracefully rather than failing the run).
+func (s sandboxComputer) BackgroundClick(ctx context.Context, x, y int) error {
+	if s.bgClick == nil {
+		return computer.ErrNoBackgroundTarget
+	}
+	if err := s.bgClick.Click(ctx, x, y); err != nil {
+		if ax.ErrNoTarget(err) || ax.ErrPermission(err) {
+			return computer.ErrNoBackgroundTarget
+		}
+		return err
+	}
+	return nil
 }
 
 // RunCommand implements computer.Commander over the sandbox's Exec.
@@ -309,6 +335,9 @@ func NewRunner(cfg config.Config, prov model.Provider, comp computer.Computer, g
 	}
 	if cfg.Agent.ScreenshotDelayMS > 0 {
 		opts = append(opts, agent.WithSettleDelay(time.Duration(cfg.Agent.ScreenshotDelayMS)*time.Millisecond))
+	}
+	if cfg.Agent.Dispatch == "background" {
+		opts = append(opts, agent.WithBackgroundDispatch())
 	}
 	if gr != nil {
 		opts = append(opts, agent.WithGrounder(gr, marker, cfg.Grounding.MinConfidence))

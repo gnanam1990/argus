@@ -22,6 +22,9 @@ var (
 	// ErrUnknownMark means an action referenced a set-of-marks index that is
 	// not in the current index.
 	ErrUnknownMark = errors.New("computer: unknown set-of-marks index")
+	// ErrNoBackgroundTarget means a BackgroundClicker found no actionable
+	// element at the point, so the executor should fall back to a cursor click.
+	ErrNoBackgroundTarget = errors.New("computer: no background-clickable element at point")
 )
 
 // ActionExecutor turns a canonical action into concrete Computer calls. It is
@@ -38,9 +41,10 @@ type ActionExecutor interface {
 type Executor struct {
 	c Computer
 
-	sx, sy float64                    // model-space → screen-space multipliers
-	marks  map[int]action.Rect        // set-of-marks index (screenshot space)
-	allow  map[action.ActionType]bool // gated-capability allowlist
+	sx, sy     float64                    // model-space → screen-space multipliers
+	marks      map[int]action.Rect        // set-of-marks index (screenshot space)
+	allow      map[action.ActionType]bool // gated-capability allowlist
+	background bool                       // prefer background (no-cursor) clicks
 }
 
 // ExecutorOption configures an Executor.
@@ -72,6 +76,16 @@ func (e *Executor) Allow(types ...action.ActionType) {
 	for _, t := range types {
 		e.allow[t] = true
 	}
+}
+
+// SetBackgroundDispatch makes single left clicks prefer the Computer's
+// BackgroundClicker (no cursor movement) when it implements one, falling back
+// to a cursor click when there's no actionable element at the point.
+func (e *Executor) SetBackgroundDispatch(on bool) { e.background = on }
+
+// WithBackgroundDispatch enables background click dispatch.
+func WithBackgroundDispatch() ExecutorOption {
+	return func(e *Executor) { e.background = true }
 }
 
 // SetScale sets the per-axis model→screen multipliers. The loop computes these
@@ -109,6 +123,21 @@ func (e *Executor) Execute(ctx context.Context, a action.Action) (action.Result,
 		p, err := e.target(a)
 		if err != nil {
 			return action.Result{}, err
+		}
+		// A single left click can go through the accessibility press action
+		// (no pointer movement) when the driver supports it and there is an
+		// element at the point; anything else uses the cursor.
+		if e.background && a.Type == action.Click && clicksFor(a) == 1 && (a.Button == action.Left || a.Button == 0) {
+			if bc, ok := e.c.(BackgroundClicker); ok {
+				err := bc.BackgroundClick(ctx, p.X, p.Y)
+				if err == nil {
+					return action.Result{}, nil
+				}
+				if !errors.Is(err, ErrNoBackgroundTarget) {
+					return action.Result{}, err
+				}
+				// No target here — fall through to a normal cursor click.
+			}
 		}
 		return action.Result{}, e.c.Click(ctx, p.X, p.Y, a.Button, clicksFor(a))
 

@@ -121,6 +121,10 @@ func runTask(args []string, out io.Writer) error {
 			fmt.Fprintln(out, "warning:", perr)
 		}
 	}
+	if cfg.Agent.Dispatch == "background" {
+		fmt.Fprintln(out, "note: background dispatch clicks via the macOS accessibility API (no pointer movement);")
+		fmt.Fprintln(out, "      grant this app Accessibility permission, else it falls back to moving the cursor.")
+	}
 
 	comp, cleanup, err := app.BuildComputer(ctx, cfg, os.Getenv)
 	if err != nil {

@@ -81,6 +81,12 @@ func WithSettleDelay(d time.Duration) Option {
 	return func(r *Runner) { r.settleDelay = d }
 }
 
+// WithBackgroundDispatch makes single left clicks prefer the driver's
+// background (no-cursor) click when available, falling back to a cursor click.
+func WithBackgroundDispatch() Option {
+	return func(r *Runner) { r.exec.SetBackgroundDispatch(true) }
+}
+
 // WithScreenshotProcessor transforms each screenshot before it is sent to the
 // model (e.g. downscaling to cut tokens/latency). The executor's coordinate
 // scale is derived from the processed frame, so clicks still land correctly.
