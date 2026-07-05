@@ -41,6 +41,7 @@ type Agent struct {
 	System            string   `json:"system,omitempty"`
 	MaxSteps          int      `json:"max_steps"`
 	ScreenshotDelayMS int      `json:"screenshot_delay_ms"`
+	ScreenshotMaxEdge int      `json:"screenshot_max_edge"` // cap the long edge of screenshots sent to the model (0 = full resolution)
 	BudgetTokens      int      `json:"budget_tokens"`
 	BudgetUSD         float64  `json:"budget_usd"`
 	Capabilities      []string `json:"capabilities,omitempty"`
@@ -152,6 +153,12 @@ func (c Config) Validate() error {
 	}
 	if c.Agent.MaxSteps < 0 {
 		return fmt.Errorf("config: agent.max_steps must be non-negative")
+	}
+	if c.Agent.ScreenshotDelayMS < 0 {
+		return fmt.Errorf("config: agent.screenshot_delay_ms must be non-negative")
+	}
+	if c.Agent.ScreenshotMaxEdge != 0 && c.Agent.ScreenshotMaxEdge < 480 {
+		return fmt.Errorf("config: agent.screenshot_max_edge must be 0 (off) or >= 480")
 	}
 	if !groundingModes[c.Grounding.Mode] {
 		return fmt.Errorf("config: unknown grounding mode %q", c.Grounding.Mode)

@@ -4,7 +4,15 @@
     "model": "kimi-latest",
     "max_tokens": 4096
   },
-  "agent": { "max_steps": 30, "retain_images": 2 },
-  "grounding": { "mode": "none" },
-  "sandbox": { "kind": "host" }
+  "agent": {
+    "max_steps": 30,
+    "retain_images": 2,
+    "screenshot_max_edge": 1400
+  },
+  "grounding": {
+    "mode": "none"
+  },
+  "sandbox": {
+    "kind": "host"
+  }
 }

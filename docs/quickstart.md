@@ -67,6 +67,35 @@ Unattended runs (approval off, or `argus eval`) fail closed: the injection
 guard denies sensitive actions instead of running them silently. Extra secret
 values can be masked everywhere via `ARGUS_SECRETS=val1,val2`.
 
+## Speed & cost knobs
+
+Each step is one model round-trip, so latency comes from the model and the
+screenshot payload, not the driver. Two `agent` settings help:
+
+```json
+{
+  "agent": {
+    "screenshot_max_edge": 1400,   // cap the long edge of frames sent to the model (0 = full resolution)
+    "screenshot_delay_ms": 300,    // pause after each action so the result renders before the next screenshot
+    "retain_images": 2             // resend fewer old screenshots each step
+  }
+}
+```
+
+- **`screenshot_max_edge`** trims the biggest input-token cost. Vision models
+  internally downsample large screenshots anyway, so ~1400 is near-lossless
+  while cutting tokens and latency substantially. Coordinates still land
+  correctly — the click scale is derived from the frame the model actually
+  saw. Applies only without a grounder (the set-of-marks index needs full
+  resolution). The emulated-provider examples ship with it set; leave it `0`
+  for Anthropic native computer-use, which manages its own resolution.
+- **`screenshot_delay_ms`** stops the agent from re-screenshotting before a
+  menu or window has appeared and then repeating the action — fewer wasted
+  (expensive) steps.
+- **Fastest quality path on macOS:** Anthropic native computer-use
+  (`examples/config/host-anthropic.json`) — purpose-built, snappy tool calls,
+  no grounding overhead.
+
 ## Interactive view (`--tui`)
 
 Add `--tui` to watch the run in a live full-screen view: a header with the

@@ -53,6 +53,24 @@ func TestValidateDisplayAndSteps(t *testing.T) {
 	}
 }
 
+func TestValidateScreenshotKnobs(t *testing.T) {
+	t.Parallel()
+	c := Defaults()
+	c.Agent.ScreenshotMaxEdge = 200 // below the 480 floor
+	if err := c.Validate(); err == nil {
+		t.Error("a too-small screenshot_max_edge should be rejected")
+	}
+	c.Agent.ScreenshotMaxEdge = 1400 // a sane cap
+	if err := c.Validate(); err != nil {
+		t.Errorf("1400 should be valid: %v", err)
+	}
+	c = Defaults()
+	c.Agent.ScreenshotDelayMS = -1
+	if err := c.Validate(); err == nil {
+		t.Error("negative screenshot_delay_ms should be rejected")
+	}
+}
+
 // A USD budget on a model with no pinned rate enforces nothing — reject it up
 // front instead of silently running uncapped.
 func TestValidateBudgetUSDNeedsPricing(t *testing.T) {

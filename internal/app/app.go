@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	sdkopt "github.com/anthropics/anthropic-sdk-go/option"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/gnanam1990/argus/internal/provider/compat"
 	"github.com/gnanam1990/argus/internal/sandbox/docker"
 	"github.com/gnanam1990/argus/internal/sandbox/host"
+	"github.com/gnanam1990/argus/pkg/action"
 	"github.com/gnanam1990/argus/pkg/agent"
 	"github.com/gnanam1990/argus/pkg/computer"
 	"github.com/gnanam1990/argus/pkg/grounder"
@@ -305,8 +307,19 @@ func NewRunner(cfg config.Config, prov model.Provider, comp computer.Computer, g
 		agent.WithTrajectory(rec),
 		agent.WithMiddleware(mw...),
 	}
+	if cfg.Agent.ScreenshotDelayMS > 0 {
+		opts = append(opts, agent.WithSettleDelay(time.Duration(cfg.Agent.ScreenshotDelayMS)*time.Millisecond))
+	}
 	if gr != nil {
 		opts = append(opts, agent.WithGrounder(gr, marker, cfg.Grounding.MinConfidence))
+	} else if cfg.Agent.ScreenshotMaxEdge > 0 {
+		// Downscale only when there's no grounder: the set-of-marks index is in
+		// full-resolution space, so a marked frame must not be resized.
+		maxEdge := cfg.Agent.ScreenshotMaxEdge
+		opts = append(opts, agent.WithScreenshotProcessor(func(img action.Image) (action.Image, error) {
+			out, _, err := mark.DownscaleLongEdge(img, maxEdge)
+			return out, err
+		}))
 	}
 	if caps := cfg.Capabilities(); len(caps) > 0 {
 		opts = append(opts, agent.WithCapabilities(caps...))

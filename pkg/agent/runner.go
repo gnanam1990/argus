@@ -7,6 +7,7 @@ import (
 	"image"
 	_ "image/jpeg" // register JPEG decoder for screenshot sizing
 	_ "image/png"  // register PNG decoder for screenshot sizing
+	"time"
 
 	"github.com/gnanam1990/argus/pkg/action"
 	"github.com/gnanam1990/argus/pkg/computer"
@@ -31,6 +32,9 @@ type Runner struct {
 
 	system   string
 	maxSteps int
+
+	settleDelay time.Duration
+	preprocess  func(action.Image) (action.Image, error)
 
 	conv     *model.Conversation
 	observed bool // at least one screenshot has entered the conversation
@@ -68,6 +72,21 @@ func WithCapabilities(types ...action.ActionType) Option {
 // WithModelOptions sets per-step provider options (temperature/seed/max-tokens).
 func WithModelOptions(opts ...model.StepOption) Option {
 	return func(r *Runner) { r.stepOpts = append(r.stepOpts, opts...) }
+}
+
+// WithSettleDelay pauses after each action batch before re-observing, so the
+// UI has time to react (a menu opening, a window appearing) and the next
+// screenshot reflects the action's result rather than the pre-action screen.
+func WithSettleDelay(d time.Duration) Option {
+	return func(r *Runner) { r.settleDelay = d }
+}
+
+// WithScreenshotProcessor transforms each screenshot before it is sent to the
+// model (e.g. downscaling to cut tokens/latency). The executor's coordinate
+// scale is derived from the processed frame, so clicks still land correctly.
+// The trajectory records the original, full-resolution capture.
+func WithScreenshotProcessor(fn func(action.Image) (action.Image, error)) Option {
+	return func(r *Runner) { r.preprocess = fn }
 }
 
 // NewRunner builds a Runner over the given provider and computer.
@@ -213,7 +232,10 @@ func (r *Runner) Run(ctx context.Context, task string) (*Outcome, error) {
 			break
 		}
 
-		// Re-observe for the next step.
+		// Let the action's effect render, then re-observe for the next step.
+		if err := r.settle(ctx); err != nil {
+			return fail(err)
+		}
 		obs, err = r.observe(ctx)
 		if err != nil {
 			return fail(fmt.Errorf("observe: %w", err))
@@ -296,36 +318,27 @@ func (r *Runner) act(ctx context.Context, turn *model.Turn, step *trajectory.Ste
 	return terminated, model.ToolMessage(contents...), nil
 }
 
-// observe captures a screenshot, updates the executor's scale factors and (when
-// grounding is engaged) its set-of-marks index, fires OnScreenshot, and appends
-// the observation to the conversation. It returns the raw screenshot for the
-// trajectory record.
+// observe captures a screenshot, decides the frame to send the model (marked
+// for grounding, or a processed/downscaled copy otherwise), updates the
+// executor's scale from THAT frame, fires OnScreenshot, and appends the
+// observation to the conversation. It returns the raw, full-resolution capture
+// for the trajectory record.
 func (r *Runner) observe(ctx context.Context) (action.Image, error) {
 	img, err := r.computer.Screenshot(ctx)
 	if err != nil {
 		return action.Image{}, err
 	}
 
-	// Scale ownership lives here: map model/screenshot space to screen space.
-	// Both failure modes must be loud: silently keeping a stale or identity
-	// scale is exactly how a Retina display or an unexpected resolution turns
-	// into a systematic misclick while the run still reports success (H6).
 	sw, sh, err := r.computer.ScreenSize(ctx)
 	if err != nil {
 		return action.Image{}, fmt.Errorf("screen size: %w", err)
 	}
-	if iw, ih, ok := decodeSize(img); ok {
-		if iw > 0 && ih > 0 {
-			r.exec.SetScale(float64(sw)/float64(iw), float64(sh)/float64(ih))
-		}
-	} else if len(img.Data) > 0 {
-		// A non-empty screenshot that fails to decode means the scale cannot
-		// be trusted at all; an explicitly empty screenshot (no bytes) has
-		// nothing to size from and is left to keep whatever scale is current.
-		return action.Image{}, fmt.Errorf("screenshot undecodable: cannot compute scale")
-	}
 
-	marked := img
+	// Decide the frame the model actually sees. Grounding overlays marks on the
+	// full-resolution capture (the mark index is in that space). Otherwise an
+	// optional processor may downscale it — vision models internally downsample
+	// large screenshots anyway, so capping resolution trims tokens and latency.
+	sent := img
 	if r.grounder != nil && !r.provider.Capabilities().NativeComputerUse {
 		els, derr := r.grounder.Detect(ctx, img)
 		if derr != nil {
@@ -336,8 +349,28 @@ func (r *Runner) observe(ctx context.Context) (action.Image, error) {
 		if merr != nil {
 			return action.Image{}, fmt.Errorf("mark: %w", merr)
 		}
-		marked = m
+		sent = m
 		r.exec.SetMarks(idx)
+	} else if r.preprocess != nil {
+		p, perr := r.preprocess(img)
+		if perr != nil {
+			return action.Image{}, fmt.Errorf("screenshot preprocess: %w", perr)
+		}
+		sent = p
+	}
+
+	// Scale ownership: map the model's screenshot-space coordinates to screen
+	// space using the dimensions of the frame the model actually saw, so
+	// downscaling doesn't shift where clicks land. Both failure modes stay
+	// loud — a silently stale or identity scale is exactly how an unexpected
+	// resolution becomes a systematic misclick while the run reports success
+	// (H6).
+	if iw, ih, ok := decodeSize(sent); ok {
+		if iw > 0 && ih > 0 {
+			r.exec.SetScale(float64(sw)/float64(iw), float64(sh)/float64(ih))
+		}
+	} else if len(sent.Data) > 0 {
+		return action.Image{}, fmt.Errorf("screenshot undecodable: cannot compute scale")
 	}
 
 	for _, mw := range r.mw {
@@ -346,9 +379,25 @@ func (r *Runner) observe(ctx context.Context) (action.Image, error) {
 		}
 	}
 
-	r.conv.AddUser(model.ImageContent(marked))
+	r.conv.AddUser(model.ImageContent(sent))
 	r.observed = true
 	return img, nil
+}
+
+// settle waits settleDelay (if set), honoring cancellation, so an action's
+// on-screen effect can render before the next observation.
+func (r *Runner) settle(ctx context.Context) error {
+	if r.settleDelay <= 0 {
+		return nil
+	}
+	t := time.NewTimer(r.settleDelay)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // decodeSize reads an encoded image's pixel dimensions without a full decode.

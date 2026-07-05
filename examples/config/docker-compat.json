@@ -7,7 +7,8 @@
   },
   "agent": {
     "max_steps": 30,
-    "retain_images": 2
+    "retain_images": 2,
+    "screenshot_max_edge": 1400
   },
   "grounding": {
     "mode": "chain",

@@ -4,7 +4,17 @@
     "model": "grok-4",
     "max_tokens": 4096
   },
-  "agent": { "max_steps": 30, "retain_images": 2 },
-  "grounding": { "mode": "chain", "omniparser_url": "http://localhost:8000", "min_confidence": 0.4 },
-  "sandbox": { "kind": "host" }
+  "agent": {
+    "max_steps": 30,
+    "retain_images": 2,
+    "screenshot_max_edge": 1400
+  },
+  "grounding": {
+    "mode": "chain",
+    "omniparser_url": "http://localhost:8000",
+    "min_confidence": 0.4
+  },
+  "sandbox": {
+    "kind": "host"
+  }
 }

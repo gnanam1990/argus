@@ -36,3 +36,7 @@ secret.key
 .idea/
 .vscode/
 *.swp
+
+# Recorded trajectories (may contain screenshots of the screen)
+runs/
+*.trajectory/
