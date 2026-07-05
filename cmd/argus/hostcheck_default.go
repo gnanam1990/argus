@@ -58,11 +58,16 @@ func captureCheck() string {
 	return ""
 }
 
-// waylandToolCheck reports which Wayland backend tools are missing.
+// waylandToolCheck reports which Wayland backend tools are missing, including
+// whether the ydotoold daemon looks reachable (its absent or root-owned socket
+// is the most common Wayland setup failure and otherwise only surfaces as an
+// opaque non-zero ydotool exit at first action).
 func waylandToolCheck() string {
 	var missing []string
 	if _, err := exec.LookPath("ydotool"); err != nil {
 		missing = append(missing, "ydotool (input — also run the ydotoold daemon)")
+	} else if s := ydotoolSocketIssue(); s != "" {
+		missing = append(missing, s)
 	}
 	haveShot := false
 	for _, tool := range []string{"grim", "gnome-screenshot", "spectacle"} {
@@ -78,6 +83,36 @@ func waylandToolCheck() string {
 		return "missing tools: " + strings.Join(missing, ", ")
 	}
 	return ""
+}
+
+// ydotoolSocketIssue checks the ydotoold daemon socket at the paths the ydotool
+// client uses ($YDOTOOL_SOCKET, then the runtime dir, then /tmp) and reports
+// what's wrong: no socket (daemon not running) or a socket this user can't
+// write (started with a bare `sudo ydotoold`, so it's root-owned).
+func ydotoolSocketIssue() string {
+	var candidates []string
+	if p := os.Getenv("YDOTOOL_SOCKET"); p != "" {
+		candidates = append(candidates, p)
+	}
+	if rd := os.Getenv("XDG_RUNTIME_DIR"); rd != "" {
+		candidates = append(candidates, rd+"/.ydotool_socket")
+	}
+	candidates = append(candidates, "/tmp/.ydotool_socket")
+
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		// Socket exists — verify this user can actually use it.
+		if f, err := os.OpenFile(p, os.O_RDWR, 0); err == nil {
+			_ = f.Close()
+			return ""
+		}
+		return "ydotoold socket at " + p + " is not writable by this user — restart the daemon with: " +
+			`sudo ydotoold --socket-own="$(id -u):$(id -g)"`
+	}
+	return "ydotoold daemon (no socket found — start it with: " +
+		`sudo ydotoold --socket-own="$(id -u):$(id -g)")`
 }
 
 // displaysInfo is empty on the X11 build: the shell driver captures the whole

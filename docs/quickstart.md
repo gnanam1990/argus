@@ -223,18 +223,27 @@ wlroots/Sway/Hyprland, GNOME, and KDE alike) and screenshots via the first of
 # 1. Install the tools (example: Arch; use your distro's packages)
 sudo pacman -S ydotool grim            # or: gnome-screenshot / spectacle
 
-# 2. Run the ydotool daemon (needs access to /dev/uinput)
-sudo ydotoold &                        # or set up a udev rule + user service
+# 2. Run the ydotool daemon so its socket is owned by YOUR user.
+#    (A bare `sudo ydotoold` leaves the socket root-owned, and every ydotool
+#    call then fails with an opaque non-zero exit.)
+sudo ydotoold --socket-own="$(id -u):$(id -g)" &
+# Or enable the packaged service:  systemctl --user enable --now ydotool
 
-# 3. Verify
+# 3. Verify — doctor checks the tools AND that the daemon socket is usable
 ./argus doctor                         # → display server: wayland; tools present
 ```
 
+If ydotoold uses a non-default socket path, export `YDOTOOL_SOCKET=<path>` for
+both the daemon and argus. Argus adapts to the installed ydotool's CLI syntax
+automatically (1.0.x long/short flags, legacy positional) and its errors carry
+ydotool's own stderr, so a misconfiguration names the fix instead of just an
+exit status.
+
 Notes and current limits: pointer position can't be read back on Wayland
 (`CursorPosition` is unsupported); coordinates are screenshot pixels, so a
-fractional-scaling setup may need calibration; `scroll` uses ydotool's wheel
-(version-dependent). Every command is overridable if your `ydotool`/screenshot
-tool differs.
+fractional-scaling setup may need calibration; wheel scrolling needs
+ydotool >= 1.0. Every command is overridable if your `ydotool`/screenshot tool
+differs.
 
 ### macOS / Windows
 

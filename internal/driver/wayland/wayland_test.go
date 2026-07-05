@@ -135,12 +135,121 @@ func TestKeyUnknownErrors(t *testing.T) {
 
 func TestTypeText(t *testing.T) {
 	fr := &fakeRunner{}
-	if err := newTest(fr).TypeText(context.Background(), "hi there"); err != nil {
+	// "--" ends option parsing so leading-dash text is typed, not read as flags.
+	if err := newTest(fr).TypeText(context.Background(), "-hi there"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"ydotool", "type", "hi there"}
+	want := []string{"ydotool", "type", "--", "-hi there"}
 	if joined(fr.last()) != joined(want) {
 		t.Errorf("argv = %v, want %v", fr.last(), want)
+	}
+}
+
+// errRunner fails commands whose joined argv matches a predicate, with a given
+// error; everything else succeeds.
+type errRunner struct {
+	fakeRunner
+	failWhen func(argv string) error
+}
+
+func (e *errRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	e.calls = append(e.calls, append([]string{name}, args...))
+	if e.failWhen != nil {
+		if err := e.failWhen(strings.Join(append([]string{name}, args...), " ")); err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
+}
+
+// TestDaemonErrorIsActionable locks in the fix for the opaque "exit status 2":
+// a socket/daemon failure must name ydotoold and the socket-ownership fix
+// instead of a bare exit status.
+func TestDaemonErrorIsActionable(t *testing.T) {
+	fr := &errRunner{failWhen: func(argv string) error {
+		if strings.HasPrefix(argv, "ydotool") {
+			return errors.New("failed to connect socket '/tmp/.ydotool_socket': Permission denied")
+		}
+		return nil
+	}}
+	err := newTest(&fr.fakeRunner, WithRunner(fr)).MoveMouse(context.Background(), 10, 10)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{"ydotoold", "--socket-own", "Permission denied"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q", err, want)
+		}
+	}
+	// A daemon failure must abort, not be retried across syntax variants.
+	if len(fr.calls) != 1 {
+		t.Errorf("got %d attempts, want 1 (no syntax retries on a daemon error)", len(fr.calls))
+	}
+}
+
+// TestMoveSyntaxFallbackAndCache verifies the version-adaptive mousemove: when
+// the modern long-flag syntax is rejected (usage error), the driver falls back
+// to the next shape and caches it, so later moves go straight to the working
+// syntax.
+func TestMoveSyntaxFallbackAndCache(t *testing.T) {
+	fr := &errRunner{failWhen: func(argv string) error {
+		if strings.Contains(argv, "--absolute -x") {
+			return errors.New("Usage: mousemove [OPTION]...") // old/short-flag build
+		}
+		return nil
+	}}
+	d := newTest(&fr.fakeRunner, WithRunner(fr))
+
+	if err := d.MoveMouse(context.Background(), 7, 9); err != nil {
+		t.Fatalf("fallback should succeed: %v", err)
+	}
+	if got := joined(fr.last()); got != "ydotool mousemove -a -x 7 -y 9" {
+		t.Errorf("fallback argv = %q, want the short-flag shape", got)
+	}
+
+	// Second move: cached — exactly one call, straight to the working shape.
+	n := len(fr.calls)
+	if err := d.MoveMouse(context.Background(), 1, 2); err != nil {
+		t.Fatal(err)
+	}
+	if len(fr.calls) != n+1 {
+		t.Errorf("cached move made %d calls, want 1", len(fr.calls)-n)
+	}
+	if got := joined(fr.last()); got != "ydotool mousemove -a -x 1 -y 2" {
+		t.Errorf("cached argv = %q, want the remembered short-flag shape", got)
+	}
+}
+
+// TestAllSyntaxesFailingNamesTheRequirement: when every known shape is
+// rejected, the error should say what's needed rather than dumping one opaque
+// exit status.
+func TestAllSyntaxesFailingNamesTheRequirement(t *testing.T) {
+	fr := &errRunner{failWhen: func(argv string) error {
+		if strings.HasPrefix(argv, "ydotool mousemove") {
+			return errors.New("unrecognized option")
+		}
+		return nil
+	}}
+	err := newTest(&fr.fakeRunner, WithRunner(fr)).MoveMouse(context.Background(), 1, 1)
+	if err == nil || !strings.Contains(err.Error(), "ydotool >= 1.0") {
+		t.Errorf("error = %v, want it to name the ydotool >= 1.0 requirement", err)
+	}
+}
+
+// TestWheelSyntaxFallback mirrors the move fallback for wheel scrolling.
+func TestWheelSyntaxFallback(t *testing.T) {
+	fr := &errRunner{failWhen: func(argv string) error {
+		if strings.Contains(argv, "--wheel") {
+			return errors.New("Usage: mousemove [OPTION]...")
+		}
+		return nil
+	}}
+	d := newTest(&fr.fakeRunner, WithRunner(fr))
+	if err := d.Scroll(context.Background(), 50, 50, 0, 3); err != nil {
+		t.Fatalf("wheel fallback should succeed: %v", err)
+	}
+	if got := joined(fr.last()); got != "ydotool mousemove -w -x 0 -y -3" {
+		t.Errorf("wheel argv = %q, want the short-flag shape with negated dy", got)
 	}
 }
 

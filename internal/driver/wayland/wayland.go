@@ -17,6 +17,7 @@ package wayland
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/png" // register PNG decoder for screen-size decoding
@@ -24,6 +25,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gnanam1990/argus/pkg/action"
 	"github.com/gnanam1990/argus/pkg/computer"
@@ -67,6 +69,13 @@ type Driver struct {
 	// testable without touching the real filesystem.
 	readFile func(string) ([]byte, error)
 	tempFile func() (string, func(), error)
+
+	// mu guards the resolved-syntax caches below. ydotool's CLI differs across
+	// versions/builds (long vs short flags, positional coords), so the first
+	// successful argv shape per operation is probed once and reused.
+	mu         sync.Mutex
+	moveStyle  int
+	wheelStyle int
 }
 
 // Option configures a Driver.
@@ -88,11 +97,13 @@ func WithCaptureCommand(name string, args ...string) Option {
 // New builds a Wayland driver.
 func New(opts ...Option) *Driver {
 	d := &Driver{
-		run:      ExecRunner{},
-		ydotool:  "ydotool",
-		capture:  defaultCaptureChain,
-		readFile: os.ReadFile,
-		tempFile: defaultTempFile,
+		run:        ExecRunner{},
+		ydotool:    "ydotool",
+		capture:    defaultCaptureChain,
+		readFile:   os.ReadFile,
+		tempFile:   defaultTempFile,
+		moveStyle:  -1,
+		wheelStyle: -1,
 	}
 	for _, o := range opts {
 		o(d)
@@ -112,11 +123,98 @@ func defaultTempFile() (string, func(), error) {
 	return name, func() { _ = os.Remove(name) }, nil
 }
 
+// stderrOf returns a failed command's captured stderr — exec.Cmd.Output's
+// *ExitError carries it, while its Error() is just "exit status N", which told
+// the user nothing — falling back to the error text when no stderr exists.
+func stderrOf(err error) string {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+		return strings.TrimSpace(string(ee.Stderr))
+	}
+	return err.Error()
+}
+
+// isDaemonErr reports whether a ydotool failure is about reaching its daemon
+// (ydotoold) rather than about the command itself: a missing or root-owned
+// socket is by far the most common Wayland setup failure.
+func isDaemonErr(msg string) bool {
+	m := strings.ToLower(msg)
+	return strings.Contains(m, "socket") || strings.Contains(m, "connect") ||
+		strings.Contains(m, "permission denied") || strings.Contains(m, "ydotoold") ||
+		strings.Contains(m, "backend unavailable")
+}
+
+// daemonError explains the ydotoold socket problem with the fix inline: a bare
+// `sudo ydotoold` creates a root-owned socket the user's ydotool client cannot
+// use, which surfaces as an opaque non-zero exit.
+func daemonError(bin string, args []string, msg string, err error) error {
+	return fmt.Errorf("wayland: %s %s: %s — ydotool cannot reach its daemon. Start ydotoold "+
+		"so its socket is owned by your user: sudo ydotoold --socket-own=\"$(id -u):$(id -g)\" "+
+		"(or point YDOTOOL_SOCKET at the daemon's socket): %w",
+		bin, strings.Join(args, " "), msg, err)
+}
+
 func (d *Driver) yd(ctx context.Context, args ...string) error {
 	if _, err := d.run.Run(ctx, d.ydotool, args...); err != nil {
-		return fmt.Errorf("wayland: %s %s: %w", d.ydotool, strings.Join(args, " "), err)
+		msg := stderrOf(err)
+		if isDaemonErr(msg) {
+			return daemonError(d.ydotool, args, msg, err)
+		}
+		return fmt.Errorf("wayland: %s %s: %s: %w", d.ydotool, strings.Join(args, " "), msg, err)
 	}
 	return nil
+}
+
+// argvStyle builds one version-specific argv shape from two coordinates.
+type argvStyle func(a, b int) []string
+
+// moveStyles are the known `ydotool mousemove` absolute-position syntaxes, in
+// preference order: 1.0.x long flags, short flags (builds whose getopt lacks
+// the long names), and the old 0.1.x positional form.
+var moveStyles = []argvStyle{
+	func(x, y int) []string { return []string{"mousemove", "--absolute", "-x", itoa(x), "-y", itoa(y)} },
+	func(x, y int) []string { return []string{"mousemove", "-a", "-x", itoa(x), "-y", itoa(y)} },
+	func(x, y int) []string { return []string{"mousemove", "--absolute", itoa(x), itoa(y)} },
+}
+
+// wheelStyles are the known wheel-scroll syntaxes (1.0.x long/short flags; the
+// 0.1.x tool had no wheel support at all).
+var wheelStyles = []argvStyle{
+	func(dx, dy int) []string { return []string{"mousemove", "--wheel", "-x", itoa(dx), "-y", itoa(dy)} },
+	func(dx, dy int) []string { return []string{"mousemove", "-w", "-x", itoa(dx), "-y", itoa(dy)} },
+}
+
+// runAdaptive executes the operation using the cached working syntax, or probes
+// the known syntaxes in order and caches the first that succeeds. A daemon
+// failure aborts immediately (no syntax would work); anything else falls
+// through to the next shape so a CLI mismatch self-heals instead of hard-coding
+// one ydotool version's flags.
+func (d *Driver) runAdaptive(ctx context.Context, cache *int, styles []argvStyle, a, b int, what string) error {
+	d.mu.Lock()
+	idx := *cache
+	d.mu.Unlock()
+	if idx >= 0 {
+		return d.yd(ctx, styles[idx](a, b)...)
+	}
+
+	var failures []string
+	for i, style := range styles {
+		args := style(a, b)
+		_, err := d.run.Run(ctx, d.ydotool, args...)
+		if err == nil {
+			d.mu.Lock()
+			*cache = i
+			d.mu.Unlock()
+			return nil
+		}
+		msg := stderrOf(err)
+		if isDaemonErr(msg) {
+			return daemonError(d.ydotool, args, msg, err)
+		}
+		failures = append(failures, fmt.Sprintf("%q: %s", strings.Join(args, " "), msg))
+	}
+	return fmt.Errorf("wayland: every known ydotool %s syntax failed — need ydotool >= 1.0 "+
+		"(and the ydotoold daemon running): %s", what, strings.Join(failures, "; "))
 }
 
 // Screenshot captures the screen as PNG, trying each configured tool until one
@@ -126,7 +224,7 @@ func (d *Driver) Screenshot(ctx context.Context) (action.Image, error) {
 	for _, c := range d.capture {
 		data, err := d.captureOne(ctx, c)
 		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", c.name, err))
+			errs = append(errs, fmt.Sprintf("%s: %s", c.name, stderrOf(err)))
 			continue
 		}
 		if len(data) > 0 {
@@ -177,9 +275,10 @@ func (d *Driver) ScreenSize(ctx context.Context) (int, int, error) {
 	return cfg.Width, cfg.Height, nil
 }
 
-// MoveMouse moves the pointer to absolute (x,y).
+// MoveMouse moves the pointer to absolute (x,y), adapting to whichever
+// mousemove syntax the installed ydotool speaks.
 func (d *Driver) MoveMouse(ctx context.Context, x, y int) error {
-	return d.yd(ctx, "mousemove", "--absolute", "-x", itoa(x), "-y", itoa(y))
+	return d.runAdaptive(ctx, &d.moveStyle, moveStyles, x, y, "mousemove")
 }
 
 // Click moves to (x,y) and clicks the button `clicks` times.
@@ -240,12 +339,13 @@ func (d *Driver) Scroll(ctx context.Context, x, y, dx, dy int) error {
 	if err := d.MoveMouse(ctx, x, y); err != nil {
 		return err
 	}
-	return d.yd(ctx, "mousemove", "--wheel", "-x", itoa(-dx), "-y", itoa(-dy))
+	return d.runAdaptive(ctx, &d.wheelStyle, wheelStyles, -dx, -dy, "wheel scroll")
 }
 
-// TypeText types literal text.
+// TypeText types literal text. "--" ends option parsing so text beginning with
+// a dash is typed, not read as a flag.
 func (d *Driver) TypeText(ctx context.Context, text string) error {
-	return d.yd(ctx, "type", text)
+	return d.yd(ctx, "type", "--", text)
 }
 
 // KeyPress presses a key chord: every key down in order, then up in reverse, so
