@@ -100,8 +100,12 @@ var interactableRoles = map[string]bool{
 // HostOption configures HostSource.
 type HostOption func(*hostSource)
 
-// WithRunner overrides the command runner (for tests).
-func WithRunner(r Runner) HostOption { return func(h *hostSource) { h.run = r } }
+// WithRunner overrides the command runner (for tests). Injecting a runner also
+// disables the native (cgo) walk so the test drives the osascript path
+// deterministically through the fake.
+func WithRunner(r Runner) HostOption {
+	return func(h *hostSource) { h.run = r; h.native = false }
+}
 
 // WithTimeout overrides the default 5s osascript timeout.
 func WithTimeout(d time.Duration) HostOption { return func(h *hostSource) { h.timeout = d } }
@@ -123,16 +127,22 @@ func WithDisplayBounds(x, y, w, h int) HostOption {
 type hostSource struct {
 	run     Runner
 	timeout time.Duration
+	native  bool // try the cgo AXUIElement walk before osascript
 
 	// display bounds in logical points (0,0,0,0 = unset → whole-desktop).
 	dispX, dispY, dispW, dispH float64
 }
 
+// errNativeUnavailable means the cgo AXUIElement walk isn't usable (non-cgo
+// build, non-darwin, or the process isn't accessibility-trusted); the tree
+// source falls back to the osascript walk.
+var errNativeUnavailable = errors.New("ax: native accessibility walk unavailable")
+
 // HostSource returns a TreeSource backed by the real host's accessibility
 // tree (see the package doc above for the JXA approach and coordinate
 // mapping). Wire it in with ax.New(ax.WithSource(ax.HostSource())).
 func HostSource(opts ...HostOption) TreeSource {
-	h := &hostSource{run: ExecRunner{}, timeout: defaultTimeout}
+	h := &hostSource{run: ExecRunner{}, timeout: defaultTimeout, native: true}
 	for _, o := range opts {
 		o(h)
 	}
@@ -142,6 +152,15 @@ func HostSource(opts ...HostOption) TreeSource {
 // detect runs the JXA script, parses its single JSON payload, and scales the
 // walked elements into the screenshot's pixel space.
 func (h *hostSource) detect(ctx context.Context, img action.Image) ([]grounder.Element, error) {
+	// Prefer the native cgo AXUIElement walk: it needs no Automation grant and
+	// cannot hang the way the System Events JXA walk can. Fall back to
+	// osascript when it isn't available (non-cgo build, or not trusted).
+	if h.native {
+		if screen, els, err := nativeWalk(); err == nil {
+			return h.finish(screen, els, img), nil
+		}
+	}
+
 	cctx, cancel := context.WithTimeout(ctx, h.timeout)
 	defer cancel()
 
@@ -152,14 +171,19 @@ func (h *hostSource) detect(ctx context.Context, img action.Image) ([]grounder.E
 	if len(bytes.TrimSpace(out)) == 0 {
 		return nil, fmt.Errorf("ax: osascript produced no output: %w", ErrUnavailable)
 	}
-
 	screen, els, err := parseTree(out)
 	if err != nil {
 		return nil, fmt.Errorf("ax: parse osascript output: %w: %v", ErrUnavailable, err)
 	}
+	return h.finish(screen, els, img), nil
+}
 
-	// Choose the reference frame: a specific display when bounds are set, else
-	// the whole primary screen the JXA reported.
+// finish scales walked elements (from either the native or osascript walk) into
+// the screenshot's pixel space. When display bounds are set it grounds against
+// that display: offset global frames into its local space, scale by its size,
+// and filter out elements on other monitors; otherwise it uses the reported
+// primary-screen size.
+func (h *hostSource) finish(screen wireScreen, els []wireElement, img action.Image) []grounder.Element {
 	refW, refH := screen.W, screen.H
 	ox, oy := 0.0, 0.0
 	filter := false
@@ -168,13 +192,12 @@ func (h *hostSource) detect(ctx context.Context, img action.Image) ([]grounder.E
 		ox, oy = h.dispX, h.dispY
 		filter = true
 	}
-
 	sx, sy := 1.0, 1.0
 	if imgW, imgH, ok := decodeSize(img); ok && refW > 0 && refH > 0 {
 		sx = float64(imgW) / refW
 		sy = float64(imgH) / refH
 	}
-	return mapElements(els, sx, sy, ox, oy, refW, refH, filter), nil
+	return mapElements(els, sx, sy, ox, oy, refW, refH, filter)
 }
 
 // runError classifies a failed osascript invocation into an
@@ -223,6 +246,7 @@ type wireScreen struct {
 type wireElement struct {
 	Role    string  `json:"role"`
 	Title   string  `json:"title"`
+	Desc    string  `json:"desc"`
 	Value   string  `json:"value"`
 	X       float64 `json:"x"`
 	Y       float64 `json:"y"`
@@ -278,6 +302,9 @@ func mapElements(els []wireElement, sx, sy, ox, oy, refW, refH float64, filter b
 			continue
 		}
 		label := e.Title
+		if label == "" {
+			label = e.Desc // icon buttons often label via AXDescription, not AXTitle
+		}
 		if label == "" {
 			label = e.Value
 		}
@@ -370,6 +397,7 @@ const jxaScriptTemplate = `function run() {
   function emit(el) {
     var role = str(attr(el, "role", "AXRole"));
     var title = str(attr(el, "title", "AXTitle"));
+    var desc = str(attr(el, "description", "AXDescription"));
     var value = str(attr(el, "value", "AXValue"));
     var enabledAttr = attr(el, "enabled", "AXEnabled");
     var x = 0, y = 0, w = 0, h = 0;
@@ -382,7 +410,7 @@ const jxaScriptTemplate = `function run() {
       if (size) { w = size[0]; h = size[1]; }
     } catch (eSize) {}
     elements.push({
-      role: role, title: title, value: value,
+      role: role, title: title, desc: desc, value: value,
       x: x, y: y, w: w, h: h,
       enabled: enabledAttr === true
     });
