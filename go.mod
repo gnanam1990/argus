@@ -1,6 +1,6 @@
 module github.com/gnanam1990/argus
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.56.0
@@ -9,7 +9,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/fogleman/gg v1.3.0
 	github.com/go-vgo/robotgo v1.0.2
-	golang.org/x/image v0.43.0
+	golang.org/x/image v0.46.0
 )
 
 require (
@@ -63,7 +63,7 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/exp v0.0.0-20260312153236-7ab1446f8b90 // indirect
-	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 )
